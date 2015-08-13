@@ -1,28 +1,31 @@
 use std::iter::Peekable;
+use std::marker::PhantomData;
 
-pub trait Coalesce<I> {
-    fn coalesce(self) -> CoalesceIterator<I>;
+pub trait Coalesce<V, I> {
+    fn coalesce(self) -> CoalesceIterator<V, I>;
 }
 
-impl<I: Iterator> Coalesce<I> for I {
-    fn coalesce(self) -> CoalesceIterator<I> {
+impl<V: Ord, I: Iterator<Item=(V, i32)>> Coalesce<V, I> for I {
+    fn coalesce(self) -> CoalesceIterator<V, I> {
         CoalesceIterator::new(self)
     }
 }
 
-pub struct CoalesceIterator<I: Iterator> {
+pub struct CoalesceIterator<V: Ord, I: Iterator<Item=(V, i32)>> {
     iter: Peekable<I>,
+    phant: PhantomData<V>,
 }
 
-impl<I: Iterator> CoalesceIterator<I> {
-    pub fn new(iter: I) -> CoalesceIterator<I> {
+impl<V: Ord, I: Iterator<Item=(V, i32)>> CoalesceIterator<V, I> {
+    pub fn new(iter: I) -> CoalesceIterator<V, I> {
         CoalesceIterator {
             iter: iter.peekable(),
+            phant: PhantomData,
         }
     }
 }
 
-impl<V: Ord, I: Iterator<Item=(V, i32)>> Iterator for CoalesceIterator<I> {
+impl<V: Ord, I: Iterator<Item=(V, i32)>> Iterator for CoalesceIterator<V, I> {
     type Item = (V, i32);
     fn next(&mut self) -> Option<(V, i32)> {
         loop {
