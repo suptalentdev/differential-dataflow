@@ -1,6 +1,7 @@
 use std::iter::Peekable;
 
 use collection_trace::{close_under_lub, LeastUpperBound, Lookup};
+
 // use iterators::merge::{Merge, MergeIterator};
 use iterators::merge::{MergeUsing, MergeUsingIterator};
 use iterators::coalesce::{Coalesce, CoalesceIterator};
@@ -177,6 +178,7 @@ impl<K: Eq+Ord+Debug, L: Lookup<K, Offset>, T: LeastUpperBound, V: Ord> Trace<K,
     // TODO : now in the least upper bound, but were not previously so. The main risk is that the
     // TODO : easy way to do this computes the LUB before and after, but this can be expensive:
     // TODO : the LUB with `index` is often likely to be smaller than the LUB without it.
+
     pub fn interesting_times<'a>(&'a mut self, key: &K, index: T) -> &'a [T] {
         let mut temp = ::std::mem::replace(&mut self.temp, Vec::new());
         temp.clear();
