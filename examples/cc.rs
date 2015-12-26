@@ -6,11 +6,9 @@ extern crate graph_map;
 extern crate differential_dataflow;
 
 use std::hash::Hash;
-use std::mem;
 use timely::dataflow::*;
 use timely::dataflow::operators::*;
 
-use differential_dataflow::Collection;
 use differential_dataflow::collection::LeastUpperBound;
 use differential_dataflow::operators::*;
 use differential_dataflow::operators::join::JoinUnsigned;
@@ -43,33 +41,33 @@ fn main() {
                 })
                 .to_stream(scope);
 
-            connected_components(&Collection::new(edges));
+            connected_components(&edges);
         });
     });
 }
 
-fn connected_components<G: Scope>(edges: &Collection<G, Edge>) -> Collection<G, (Node, Node)>
+fn connected_components<G: Scope>(edges: &Stream<G, (Edge, i32)>) -> Stream<G, ((Node, Node), i32)>
 where G::Timestamp: LeastUpperBound+Hash {
 
     // each edge (x,y) means that we need at least a label for the min of x and y.
     let nodes = edges.map_in_place(|pair| {
-                        let min = std::cmp::min(pair.0, pair.1);
-                        *pair = (min, min);
+                        let min = std::cmp::min((pair.0).0, (pair.0).1);
+                        pair.0 = (min, min);
                      })
                      .consolidate_by(|x| x.0);
 
     // each edge should exist in both directions.
-    let edges = edges.map_in_place(|x| mem::swap(&mut x.0, &mut x.1))
+    let edges = edges.map_in_place(|x| x.0 = ((x.0).1, (x.0).0))
                      .concat(&edges);
 
     // don't actually use these labels, just grab the type
     nodes.filter(|_| false)
          .iterate(|inner| {
-             let edges = edges.enter(&inner.scope());
-             let nodes = nodes.enter_at(&inner.scope(), |r| 256 * (64 - (r.0).0.leading_zeros() as u64));
+             let edges = inner.scope().enter(&edges);
+             let nodes = inner.scope().enter_at(&nodes, |r| 256 * (64 - (r.0).0.leading_zeros() as u64));
 
             inner.join_map_u(&edges, |_k,l,d| (*d,*l))
                  .concat(&nodes)
-                 .group_u(|_, s, t| { t.push((*s.peek().unwrap().0, 1)); } )
+                 .group_u(|_, mut s, t| { t.push((*s.peek().unwrap().0, 1)); } )
          })
 }

@@ -38,23 +38,28 @@ use std::ops::DerefMut;
 
 use itertools::Itertools;
 
-use ::{Collection, Data};
+use ::Data;
 use timely::dataflow::*;
 use timely::dataflow::operators::{Map, Binary};
 use timely::dataflow::channels::pact::Exchange;
 use timely::drain::DrainExt;
 
 use collection::{LeastUpperBound, Lookup, Trace, Offset};
-use collection::trace::CollectionIterator;
+use collection::trace::{CollectionIterator, DifferenceIterator, Traceable};
 
 use iterators::coalesce::Coalesce;
 use radix_sort::{RadixSorter, Unsigned};
 use collection::compact::Compact;
 
-/// Extension trait for the `group_by` and `group_by_u` differential dataflow methods.
-pub trait CoGroupBy<G: Scope, K: Data, V1: Data> where G::Timestamp: LeastUpperBound {
+impl<G: Scope, K: Data, V1: Data, S> CoGroupBy<G, K, V1> for S
+where G::Timestamp: LeastUpperBound,
+      S: Binary<G, ((K,V1), i32)>+Map<G, ((K,V1), i32)> { }
 
-    /// A primitive binary version of `group_by`, which acts on a `Collection<G, (K, V1)>` and a `Collection<G, (K, V2)>`.
+/// Extension trait for the `group_by` and `group_by_u` differential dataflow methods.
+pub trait CoGroupBy<G: Scope, K: Data, V1: Data> : Binary<G, ((K,V1), i32)>+Map<G, ((K,V1), i32)>
+where G::Timestamp: LeastUpperBound {
+
+    /// A primitive binary version of `group_by`, which acts on a `Stream<((K,V1),i32)` and a `Stream<((K,V2),i32)`.
     ///
     /// The two streams must already be key-value pairs, which is too bad. Also, in addition to the
     /// normal arguments (another stream, a hash for the key, a reduction function, and per-key logic),
@@ -70,26 +75,10 @@ pub trait CoGroupBy<G: Scope, K: Data, V1: Data> where G::Timestamp: LeastUpperB
         KH:    Fn(&K)->U+'static,
         Look:  Lookup<K, Offset>+'static,
         LookG: Fn(u64)->Look,
-        Logic: Fn(&K, &mut CollectionIterator<V1>, &mut CollectionIterator<V2>, &mut Vec<(V3, i32)>)+'static,
+        Logic: Fn(&K, &mut CollectionIterator<DifferenceIterator<V1>>, &mut CollectionIterator<DifferenceIterator<V2>>, &mut Vec<(V3, i32)>)+'static,
         Reduc: Fn(&K, &V3)->D+'static,
     >
-    (&self, other: &Collection<G, (K, V2)>, key_h: KH, reduc: Reduc, look: LookG, logic: Logic) -> Collection<G, D>;
-}
-
-impl<G: Scope, K: Data, V1: Data> CoGroupBy<G, K, V1> for Collection<G, (K, V1)>
-where G::Timestamp: LeastUpperBound {
-    fn cogroup_by_inner<
-        D:     Data,
-        V2:    Data+Default,
-        V3:    Data+Default,
-        U:     Unsigned+Default,
-        KH:    Fn(&K)->U+'static,
-        Look:  Lookup<K, Offset>+'static,
-        LookG: Fn(u64)->Look,
-        Logic: Fn(&K, &mut CollectionIterator<V1>, &mut CollectionIterator<V2>, &mut Vec<(V3, i32)>)+'static,
-        Reduc: Fn(&K, &V3)->D+'static,
-    >
-    (&self, other: &Collection<G, (K, V2)>, key_h: KH, reduc: Reduc, look: LookG, logic: Logic) -> Collection<G, D> {
+    (&self, other: &Stream<G, ((K,V2),i32)>, key_h: KH, reduc: Reduc, look: LookG, logic: Logic) -> Stream<G, (D, i32)> {
 
         let mut source1 = Trace::new(look(0));
         let mut source2 = Trace::new(look(0));
@@ -104,9 +93,6 @@ where G::Timestamp: LeastUpperBound {
 
         // temporary storage for operator implementations to populate
         let mut buffer = vec![];
-        let mut heap1 = vec![];
-        let mut heap2 = vec![];
-        let mut heap3 = vec![];
 
         let key_h = Rc::new(key_h);
         let key_1 = key_h.clone();
@@ -120,7 +106,7 @@ where G::Timestamp: LeastUpperBound {
         let mut sorter2 = RadixSorter::new();
 
         // fabricate a data-parallel operator using the `unary_notify` pattern.
-        Collection::new(self.inner.binary_notify(&other.inner, exch1, exch2, "CoGroupBy", vec![], move |input1, input2, output, notificator| {
+        self.binary_notify(other, exch1, exch2, "CoGroupBy", vec![], move |input1, input2, output, notificator| {
 
             // 1. read each input, and stash it in our staging area
             while let Some((time, data)) = input1.next() {
@@ -140,6 +126,10 @@ where G::Timestamp: LeastUpperBound {
             // times are interesting either because we received data, or because we conclude
             // in the processing of a time that a future time will be interesting.
             while let Some((index, _count)) = notificator.next() {
+
+                let mut stash = Vec::new();
+
+                panic!("interesting times needs to do LUB of union of times for each key, input");
 
                 // 2a. fetch any data associated with this time.
                 if let Some(mut queue) = inputs1.remove_key(&index) {
@@ -165,10 +155,13 @@ where G::Timestamp: LeastUpperBound {
                     if let Some(compact) = compact {
 
                         for key in &compact.keys {
-                            for time in source1.interesting_times(key, index.clone()).iter() {
+                            stash.push(index.clone());
+                            source1.interesting_times(key, &index, &mut stash);
+                            for time in &stash {
                                 let mut queue = to_do.entry_or_insert((*time).clone(), || { notificator.notify_at(time); Vec::new() });
                                 queue.push((*key).clone());
                             }
+                            stash.clear();
                         }
 
                         source1.set_difference(index.clone(), compact);
@@ -199,10 +192,13 @@ where G::Timestamp: LeastUpperBound {
                     if let Some(compact) = compact {
 
                         for key in &compact.keys {
-                            for time in source2.interesting_times(key, index.clone()).iter() {
+                            stash.push(index.clone());
+                            source2.interesting_times(key, &index, &mut stash);
+                            for time in &stash {
                                 let mut queue = to_do.entry_or_insert((*time).clone(), || { notificator.notify_at(time); Vec::new() });
                                 queue.push((*key).clone());
                             }
+                            stash.clear();
                         }
 
                         source2.set_difference(index.clone(), compact);
@@ -232,8 +228,8 @@ where G::Timestamp: LeastUpperBound {
                     for key in keys {
 
                         // acquire an iterator over the collection at `time`.
-                        let mut input1 = unsafe { source1.get_collection_using(&key, &index, &mut heap1) };
-                        let mut input2 = unsafe { source2.get_collection_using(&key, &index, &mut heap2) };
+                        let mut input1 = source1.get_collection(&key, &index);
+                        let mut input2 = source2.get_collection(&key, &index);
 
                         // if we have some data, invoke logic to populate self.dst
                         if input1.peek().is_some() || input2.peek().is_some() { logic(&key, &mut input1, &mut input2, &mut buffer); }
@@ -242,7 +238,7 @@ where G::Timestamp: LeastUpperBound {
 
                         // push differences in to Compact.
                         let mut compact = accumulation.session();
-                        for (val, wgt) in Coalesce::coalesce(unsafe { result.get_collection_using(&key, &index, &mut heap3) }
+                        for (val, wgt) in Coalesce::coalesce(result.get_collection(&key, &index)
                                                                    .map(|(v, w)| (v,-w))
                                                                    .merge_by(buffer.iter().map(|&(ref v, w)| (v, w)), |x,y| {
                                                                         x.0 <= y.0
@@ -261,6 +257,6 @@ where G::Timestamp: LeastUpperBound {
                     }
                 }
             }
-        }))
+        })
     }
 }

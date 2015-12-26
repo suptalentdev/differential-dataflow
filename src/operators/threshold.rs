@@ -4,7 +4,7 @@ use std::default::Default;
 
 use itertools::Itertools;
 
-use ::{Collection, Data};
+use ::Data;
 use timely::dataflow::*;
 use timely::dataflow::operators::{Map, Unary};
 use timely::dataflow::channels::pact::Exchange;
@@ -15,9 +15,12 @@ use radix_sort::{RadixSorter, Unsigned};
 use collection::{LeastUpperBound, Lookup};
 use collection::count::{Count, Offset};
 use collection::compact::Compact;
+use collection::trace::{Traceable};
+
+impl<G: Scope, D: Data+Default+'static, S: Unary<G, (D, i32)>> Threshold<G, D> for S where G::Timestamp: LeastUpperBound { }
 
 /// Extension trait for the `group` differential dataflow method
-pub trait Threshold<G: Scope, D: Data+Default+'static>
+pub trait Threshold<G: Scope, D: Data+Default+'static> : Unary<G, (D,i32)>
     where G::Timestamp: LeastUpperBound {
     fn threshold<
         F: Fn(&D, i32)->i32+'static,
@@ -25,17 +28,7 @@ pub trait Threshold<G: Scope, D: Data+Default+'static>
         KeyH: Fn(&D)->U+'static,
         Look:  Lookup<D, Offset>+'static,
         LookG: Fn(u64)->Look+'static,
-        >(&self, key_h: KeyH, look: LookG, function: F) -> Collection<G, D>;
-}
-
-impl<G: Scope, D: Data+Default+'static> Threshold<G, D> for Collection<G, D> where G::Timestamp: LeastUpperBound {
-    fn threshold<
-        F: Fn(&D, i32)->i32+'static,
-        U: Unsigned+Default+'static,
-        KeyH: Fn(&D)->U+'static,
-        Look:  Lookup<D, Offset>+'static,
-        LookG: Fn(u64)->Look+'static,
-        >(&self, key_h: KeyH, look: LookG, function: F) -> Collection<G, D> {
+        >(&self, key_h: KeyH, look: LookG, function: F) -> Stream<G, (D, i32)> {
 
         let mut source = Count::new(look(0));
         let mut result = Count::new(look(0));
@@ -51,7 +44,7 @@ impl<G: Scope, D: Data+Default+'static> Threshold<G, D> for Collection<G, D> whe
         let key1 = Rc::new(key_h);
         let key2 = key1.clone();
 
-        Collection::new(self.inner.unary_notify(Exchange::new(move |x: &(D, i32)| key1(&x.0).as_u64()), "Count", vec![], move |input, output, notificator| {
+        self.unary_notify(Exchange::new(move |x: &(D, i32)| key1(&x.0).as_u64()), "Count", vec![], move |input, output, notificator| {
 
             while let Some((time, data)) = input.next() {
                 notificator.notify_at(&time);
@@ -60,10 +53,8 @@ impl<G: Scope, D: Data+Default+'static> Threshold<G, D> for Collection<G, D> whe
             }
 
             while let Some((index, _count)) = notificator.next() {
-
                 // 2a. fetch any data associated with this time.
                 if let Some(mut queue) = inputs.remove_key(&index) {
-
                     // sort things; radix if many, .sort_by if few.
                     let compact = if queue.len() > 1 {
                         for element in queue.into_iter() {
@@ -82,12 +73,15 @@ impl<G: Scope, D: Data+Default+'static> Threshold<G, D> for Collection<G, D> whe
                         Compact::from_radix(&mut vec![vec], &|k| key2(k))
                     };
                     if let Some(compact) = compact {
-
+                        let mut stash = Vec::new();
                         for key in &compact.keys {
-                            for time in source.interesting_times(key, index.clone()).iter() {
+                            stash.push(index.clone());
+                            source.interesting_times(key, &index, &mut stash);
+                            for time in &stash {
                                 let mut queue = to_do.entry_or_insert((*time).clone(), || { notificator.notify_at(time); Vec::new() });
                                 queue.push((*key).clone());
                             }
+                            stash.clear();
                         }
 
                         source.set_difference(index.clone(), compact);
@@ -97,10 +91,9 @@ impl<G: Scope, D: Data+Default+'static> Threshold<G, D> for Collection<G, D> whe
                 // we may need to produce output at index
                 let mut session = output.session(&index);
 
-
-                    // 2b. We must now determine for each interesting key at this time, how does the
-                    // currently reported output match up with what we need as output. Should we send
-                    // more output differences, and what are they?
+                // 2b. We must now determine for each interesting key at this time, how does the
+                // currently reported output match up with what we need as output. Should we send
+                // more output differences, and what are they?
 
                 // Much of this logic used to hide in `OperatorTrace` and `CollectionTrace`.
                 // They are now gone and simpler, respectively.
@@ -132,7 +125,6 @@ impl<G: Scope, D: Data+Default+'static> Threshold<G, D> for Collection<G, D> whe
                     }
                 }
             }
-
-        }))
+        })
     }
 }
