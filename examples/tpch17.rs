@@ -12,12 +12,14 @@ use std::io::{BufRead, BufReader};
 use timely::*;
 use timely::dataflow::*;
 use timely::dataflow::operators::*;
-use timely::dataflow::channels::pact::Pipeline;
+use timely::drain::DrainExt;
+
 use timely::progress::timestamp::RootTimestamp;
+use timely::dataflow::channels::pact::Pipeline;
 
 use differential_dataflow::Collection;
-use differential_dataflow::operators::group::GroupUnsigned;
-use differential_dataflow::operators::join::JoinUnsigned;
+use differential_dataflow::operators::group::GroupBy;
+use differential_dataflow::operators::join::JoinBy;
 
 fn main() {
 
@@ -49,12 +51,10 @@ fn main() {
                              .map(|(key, _, _)| key);
 
             // restrict lineitems to those of the relevant part
-            let items = items.map(|x| (x.0, (x.1, x.2)))
-                             .semijoin(&parts)
-                             .map(|(k,v)| (k, v.0, v.1));
+            let items = items.join_by_u(&parts, |x| (x.0, (x.1,x.2)), |y| (y,()), |k,x,_| (*k,x.0,x.1));
 
             // compute the average quantities
-            let average = items.map(|(x,y,_)| (x,y)).group_u(|_,s,t| {
+            let average = items.group_by_u(|(x,y,_)| (x,y), |k,v| (*k,*v), |_,s,t| {
                 let mut sum = 0;
                 let mut cnt = 0;
                 for (&val,wgt) in s {
@@ -65,8 +65,7 @@ fn main() {
             });
 
             // join items against their averages, filter by quantity, remove filter coordinate
-            items.map(|x| (x.0, (x.1, x.2)))
-                 .join_map_u(&average, |k, x, f| (*k, x.0, x.1, *f))
+            items.join_by_u(&average, |x| (x.0, (x.1, x.2)), |y| y, |k, x, f| (*k, x.0, x.1, *f))
                  .filter(|&(_, q, _, avg)| q < avg / 5)
                  .map(|(key, _, price, _)| (key, price))
                  .inner
@@ -132,7 +131,7 @@ fn main() {
         parts.close();
         let item_count = items_buffer.len();
 
-        for (index, item) in items_buffer.drain(..).enumerate() {
+        for (index, item) in items_buffer.drain_temp().enumerate() {
             items.send(item);
             items.advance_to(index as u64 + 1);
             while *epoch.borrow() <= index as u64 {

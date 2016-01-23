@@ -32,6 +32,7 @@
 //! ```
 
 use std::default::Default;
+// use std::hash::Hasher;
 use std::collections::HashMap;
 use std::ops::DerefMut;
 
@@ -43,11 +44,11 @@ use timely::dataflow::operators::{Map, Unary};
 use timely::dataflow::channels::pact::Exchange;
 use timely_sort::{LSBRadixSorter, Unsigned};
 
-use collection::{LeastUpperBound, Lookup, Trace, BasicTrace, Offset};
+use collection::{LeastUpperBound, Lookup, Trace, Offset};
 use collection::trace::CollectionIterator;
-use collection::basic::DifferenceIterator;
-use collection::compact::Compact;
+
 use iterators::coalesce::Coalesce;
+use collection::compact::Compact;
 
 /// Extension trait for the `group` differential dataflow method
 pub trait Group<G: Scope, K: Data, V: Data> : GroupBy<G, (K,V)>
@@ -55,7 +56,8 @@ pub trait Group<G: Scope, K: Data, V: Data> : GroupBy<G, (K,V)>
 
     /// Groups records by their first field, and applies reduction logic to the associated values.
     fn group<L, V2: Data>(&self, logic: L) -> Collection<G, (K,V2)>
-        where L: Fn(&K, &mut CollectionIterator<DifferenceIterator<V>>, &mut Vec<(V2, Delta)>)+'static {
+        where L: Fn(&K, &mut CollectionIterator<V>, &mut Vec<(V2, Delta)>)+'static {
+            // self.group_by_core(|x| x, |&(ref k,_)| k.hashed(), |k| k.hashed(), |k,v2| ((*k).clone(), (*v2).clone()), |_| HashMap::new(), logic)
             self.group_by_core(
                 |x| x,
                 |&(ref k,_)| k.hashed(),
@@ -75,7 +77,7 @@ where G::Timestamp: LeastUpperBound,
 pub trait GroupUnsigned<G: Scope, U: Unsigned+Data+Default, V: Data> : GroupBy<G, (U,V)>
     where G::Timestamp: LeastUpperBound {
     fn group_u<L, V2: Data>(&self, logic: L) -> Collection<G, (U, V2)>
-        where L: Fn(&U, &mut CollectionIterator<DifferenceIterator<V>>, &mut Vec<(V2, i32)>)+'static {
+        where L: Fn(&U, &mut CollectionIterator<V>, &mut Vec<(V2, i32)>)+'static {
             self.group_by_core(
                 |x| x,
                 |&(ref k,_)| k.as_u64(),
@@ -101,7 +103,7 @@ where G::Timestamp: LeastUpperBound {
         V2:    Data,
         D2:    Data,
         KV:    Fn(D1)->(U,V1)+'static,
-        Logic: Fn(&U, &mut CollectionIterator<DifferenceIterator<V1>>, &mut Vec<(V2, i32)>)+'static,
+        Logic: Fn(&U, &mut CollectionIterator<V1>, &mut Vec<(V2, i32)>)+'static,
         Reduc: Fn(&U, &V2)->D2+'static,
     >
             (&self, kv: KV, reduc: Reduc, logic: Logic) -> Collection<G, D2> {
@@ -142,7 +144,7 @@ where G::Timestamp: LeastUpperBound {
         KH:    Fn(&K)->U+'static,                   //  partitioning function for key; should match Part.
 
         // user-defined operator logic, from a key and value iterator, populating an output vector.
-        Logic: Fn(&K, &mut CollectionIterator<DifferenceIterator<V1>>, &mut Vec<(V2, i32)>)+'static,
+        Logic: Fn(&K, &mut CollectionIterator<V1>, &mut Vec<(V2, i32)>)+'static,
 
         // function from key and output value to output data.
         Reduc: Fn(&K, &V2)->D2+'static,
@@ -159,7 +161,7 @@ where G::Timestamp: LeastUpperBound {
         V2:    Data,
         D2:    Data,
         KV:    Fn(D1)->(U,V1)+'static,
-        Logic: Fn(&U, &mut CollectionIterator<DifferenceIterator<V1>>, &mut Vec<(V2, i32)>)+'static,
+        Logic: Fn(&U, &mut CollectionIterator<V1>, &mut Vec<(V2, i32)>)+'static,
         Reduc: Fn(&U, &V2)->D2+'static,
     >
             (&self, kv: KV, reduc: Reduc, logic: Logic) -> Collection<G, D2>;
@@ -178,7 +180,7 @@ pub trait GroupByCore<G: Scope, D1: Data> {
         KH:    Fn(&K)->U+'static,
         Look:  Lookup<K, Offset>+'static,
         LookG: Fn(u64)->Look,
-        Logic: Fn(&K, &mut CollectionIterator<DifferenceIterator<V1>>, &mut Vec<(V2, i32)>)+'static,
+        Logic: Fn(&K, &mut CollectionIterator<V1>, &mut Vec<(V2, i32)>)+'static,
         Reduc: Fn(&K, &V2)->D2+'static,
     >
     (&self, kv: KV, part: Part, key_h: KH, reduc: Reduc, look: LookG, logic: Logic) -> Collection<G, D2>;
@@ -201,19 +203,30 @@ impl<G: Scope, D1: Data> GroupByCore<G, D1> for Collection<G, D1> where G::Times
         KH:    Fn(&K)->U+'static,
         Look:  Lookup<K, Offset>+'static,
         LookG: Fn(u64)->Look,
-        Logic: Fn(&K, &mut CollectionIterator<DifferenceIterator<V1>>, &mut Vec<(V2, i32)>)+'static,
+        Logic: Fn(&K, &mut CollectionIterator<V1>, &mut Vec<(V2, i32)>)+'static,
         Reduc: Fn(&K, &V2)->D2+'static,
     >
     (&self, kv: KV, part: Part, key_h: KH, reduc: Reduc, look: LookG, logic: Logic) -> Collection<G, D2> {
 
-        let peers = self.scope().peers();
+        // A pair of source and result `CollectionTrace` instances.
+        // TODO : The hard-coded 0 means we don't know how many bits we can shave off of each int
+        // TODO : key, which is fine for `HashMap` but less great for integer keyed maps, which use
+        // TODO : dense vectors (sparser as number of workers increases).
+        // TODO : At the moment, we don't have access to the stream's underlying .scope() method,
+        // TODO : which is what would let us see the number of peers, because we only know that
+        // TODO : the type also implements the `Unary` and `Map` traits, not that it is a `Stream`.
+        // TODO : We could implement this just for `Stream`, but would have to repeat the trait
+        // TODO : method signature boiler-plate, rather than use default implemenations.
+        // let mut trace =  OperatorTrace::<K, G::Timestamp, V1, V2, Look>::new(|| look(0));
+
+        let peers = self.inner.scope().peers();
         let mut log_peers = 0;
         while (1 << (log_peers + 1)) <= peers {
             log_peers += 1;
         }
 
-        let mut source = BasicTrace::new(look(log_peers));
-        let mut result = BasicTrace::new(look(log_peers));
+        let mut source = Trace::new(look(log_peers));
+        let mut result = Trace::new(look(log_peers));
 
         // A map from times to received (key, val, wgt) triples.
         let mut inputs = Vec::new();
@@ -223,8 +236,8 @@ impl<G: Scope, D1: Data> GroupByCore<G, D1> for Collection<G, D1> where G::Times
 
         // temporary storage for operator implementations to populate
         let mut buffer = vec![];
-        // let mut heap1 = vec![];
-        // let mut heap2 = vec![];
+        let mut heap1 = vec![];
+        let mut heap2 = vec![];
 
         // create an exchange channel based on the supplied Fn(&D1)->u64.
         let exch = Exchange::new(move |&(ref x,_)| part(x));
@@ -269,15 +282,11 @@ impl<G: Scope, D1: Data> GroupByCore<G, D1> for Collection<G, D1> where G::Times
 
                     if let Some(compact) = compact {
 
-                        let mut stash = Vec::new();
                         for key in &compact.keys {
-                            stash.push(index.clone());
-                            source.interesting_times(key, &index, &mut stash);
-                            for time in &stash {
+                            for time in source.interesting_times(key, index.clone()).iter() {
                                 let mut queue = to_do.entry_or_insert((*time).clone(), || { notificator.notify_at(time); Vec::new() });
                                 queue.push((*key).clone());
                             }
-                            stash.clear();
                         }
 
                         // add the accumulation to the trace source.
@@ -305,7 +314,7 @@ impl<G: Scope, D1: Data> GroupByCore<G, D1> for Collection<G, D1> where G::Times
                     for key in keys {
 
                         // acquire an iterator over the collection at `time`.
-                        let mut input = source.get_collection(&key, &index);
+                        let mut input = unsafe { source.get_collection_using(&key, &index, &mut heap1) };
 
                         // if we have some data, invoke logic to populate self.dst
                         if input.peek().is_some() { logic(&key, &mut input, &mut buffer); }
@@ -314,7 +323,7 @@ impl<G: Scope, D1: Data> GroupByCore<G, D1> for Collection<G, D1> where G::Times
 
                         // push differences in to Compact.
                         let mut compact = accumulation.session();
-                        for (val, wgt) in Coalesce::coalesce(result.get_collection(&key, &index)
+                        for (val, wgt) in Coalesce::coalesce(unsafe { result.get_collection_using(&key, &index, &mut heap2) }
                                                                    .map(|(v, w)| (v,-w))
                                                                    .merge_by(buffer.iter().map(|&(ref v, w)| (v, w)), |x,y| {
                                                                         x.0 <= y.0

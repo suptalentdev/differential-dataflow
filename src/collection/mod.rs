@@ -11,10 +11,9 @@ pub mod compact;
 pub mod tier;
 pub mod count;
 pub mod robin_hood;
-pub mod basic;
 
 pub use collection::lookup::Lookup;
 pub use collection::least_upper_bound::LeastUpperBound;
 pub use collection::least_upper_bound::close_under_lub;
-pub use collection::trace::{Trace, TraceRef};
-pub use collection::basic::{BasicTrace, Offset};
+pub use collection::trace::Trace;
+pub use collection::trace::Offset;
