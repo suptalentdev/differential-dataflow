@@ -12,8 +12,8 @@ use timely::dataflow::operators::*;
 
 use differential_dataflow::Collection;
 use differential_dataflow::operators::*;
-use differential_dataflow::operators::group::{GroupUnsigned};
-use differential_dataflow::operators::join::{JoinUnsigned};
+use differential_dataflow::operators::group::{GroupUnsigned, GroupBy};
+use differential_dataflow::operators::join::{JoinUnsigned, JoinBy};
 use differential_dataflow::collection::LeastUpperBound;
 
 type Node = u32;
@@ -36,7 +36,6 @@ fn main() {
 
             edges = _trim_and_flip(&edges);
             edges = _trim_and_flip(&edges);
-            // edges.inspect(|x| println!("edge: {:?}", x.0));
             edges = _strongly_connected(&edges);
 
             let mut counter = 0;
@@ -92,17 +91,13 @@ fn main() {
 
 fn _trim_and_flip<G: Scope>(graph: &Collection<G, Edge>) -> Collection<G, Edge>
 where G::Timestamp: LeastUpperBound {
-    graph.iterate(|edges| {
-        let inner = graph.enter(&edges.scope())
-                         .map_in_place(|x| mem::swap(&mut x.0, &mut x.1));
-
-        edges.map(|(x,_)| x)
-             .threshold(|&x| x, |i| (Vec::new(), i), |_,_| 1)
-             .map(|x| (x,()))
-             .join_map_u(&inner, |&d,_,&s| (s,d))
-    })
-    .map_in_place(|x| mem::swap(&mut x.0, &mut x.1))
-    // .inspect_batch(|t,_x| println!("observed edges at {:?}", t))
+        graph.iterate(|edges| {
+            let inner = graph.enter(&edges.scope());
+            edges.map(|(x,_)| x)
+            //   .threshold(|&x| x, |i| (Vec::new(), i), |_, w| if w > 0 { 1 } else { 0 })
+                 .group_by_u(|x|(x,()), |&x,_| x, |_,_,target| target.push(((),1)))
+                 .join_by_u(&inner, |x| (x,()), |(s,d)| (d,s), |&d,_,&s| (s,d))
+        }).map_in_place(|x| mem::swap(&mut x.0, &mut x.1))
 }
 
 fn _strongly_connected<G: Scope>(graph: &Collection<G, Edge>) -> Collection<G, Edge>
@@ -126,7 +121,7 @@ fn _trim_edges<G: Scope>(cycle: &Collection<G, Edge>, edges: &Collection<G, Edge
          .join_map_u(&labels, |&e2,&(e1,l1),&l2| ((e1,e2),(l1,l2)))
          .filter(|&(_,(l1,l2))| l1 == l2)
          .map(|((x1,x2),_)| (x2,x1))
-      // .consolidate_by(|x| x.0)
+    //   .consolidate_by(|x| x.0)
 }
 
 fn _reachability<G: Scope>(edges: &Collection<G, Edge>, nodes: &Collection<G, (Node, Node)>) -> Collection<G, Edge>
@@ -139,7 +134,7 @@ where G::Timestamp: LeastUpperBound+Hash {
 
              _improve_labels(inner, &edges, &nodes)
          })
-         // .consolidate_by(|x| x.0)
+        //  .consolidate_by(|x| x.0)
 }
 
 fn _improve_labels<G: Scope>(labels: &Collection<G, (Node, Node)>,
@@ -148,11 +143,7 @@ fn _improve_labels<G: Scope>(labels: &Collection<G, (Node, Node)>,
     -> Collection<G, (Node, Node)>
 where G::Timestamp: LeastUpperBound {
 
-    let result = labels.join_map_u(&edges, |_k,l,d| (*d,*l))
+    labels.join_map_u(&edges, |_k,l,d| (*d,*l))
           .concat(&nodes)
-          .group_u(|_, mut s, t| t.push((*s.peek().unwrap().0, 1)));
-         // .consolidate_by(|x| x.0);
-
-    // result.inner.inspect(|x| println!("diff: {:?}", x));
-    result
+          .group_u(|_, s, t| t.push((*s.peek().unwrap().0, 1)))
 }
