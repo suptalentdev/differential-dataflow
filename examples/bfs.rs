@@ -40,7 +40,9 @@ fn main() {
                 result = result.filter(|_| false);
             }
 
-            let probe = result.map(|(_x,l)| l).consolidate_by(|&x| x).inner.inspect(|x| println!("\t{:?}", x)).probe();
+            let probe = result.map(|(_,l)| l)
+                              .consolidate_by(|&x| x)
+                              .inspect(|x| println!("\t{:?}", x)).probe();
 
             (edge_input, probe.0)
         });
@@ -71,9 +73,11 @@ fn main() {
         if batch > 0 {
             let mut changes = Vec::new();
             for wave in 0.. {
-                for _ in 0..batch {
-                    changes.push(((rng1.gen_range(0, nodes), rng1.gen_range(0, nodes)), 1));
-                    changes.push(((rng2.gen_range(0, nodes), rng2.gen_range(0, nodes)),-1));
+                if computation.index() == 0 {
+                    for _ in 0..batch {
+                        changes.push(((rng1.gen_range(0, nodes), rng1.gen_range(0, nodes)), 1));
+                        changes.push(((rng2.gen_range(0, nodes), rng2.gen_range(0, nodes)),-1));
+                    }
                 }
 
                 let start = time::precise_time_s();

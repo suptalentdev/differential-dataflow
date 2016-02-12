@@ -54,20 +54,15 @@ impl<G: Scope, D: Ord+Data+Debug> ConsolidateExt<D> for Collection<G, D> {
         let exch = Exchange::new(move |&(ref x,_)| (*part1)(x).as_u64());
         Collection::new(self.inner.unary_notify(exch, "Consolidate", vec![], move |input, output, notificator| {
 
-            // input.for_each(|index: &G::Timestamp, data: &mut Content<(D, i32)>| {
             while let Some((index, data)) = input.next() {
                 notificator.notify_at(&index);
                 inputs.entry_or_insert(index.clone(), || LSBRadixSorter::new())
                       .extend(data.drain(..), &|x| (*part2)(&x.0));
             }
-            // });
 
             // 2. go through each time of interest that has reached completion
             while let Some((index, _count)) = notificator.next() {
-            // notificator.for_each(|index, _count| {
                 if let Some(mut stash) = inputs.remove_key(&index) {
-
-                    // let start = ::time::precise_time_s();
 
                     let mut session = output.session(&index);
                     let mut buffer = vec![];
@@ -88,11 +83,8 @@ impl<G: Scope, D: Ord+Data+Debug> ConsolidateExt<D> for Collection<G, D> {
                         buffer.sort_by(|x: &(D,i32),y: &(D,i32)| x.0.cmp(&y.0));
                         session.give_iterator(buffer.drain(..).coalesce());
                     }
-
-                    // println!("consolidated {:?} in {:?}s", index, ::time::precise_time_s() - start);
                 }
             }
-            // });
         }))
     }
 }
