@@ -50,7 +50,7 @@ Let's take the [BFS example](https://github.com/frankmcsherry/differential-dataf
 
 where `nodes` and `edges` are numbers of nodes and edges in your random graph of choice, `batch` is "how many edges should we change at a time?" and `inspect` should be `inspect` if you want to see any output. Not observing the output may let it go a bit faster in a low-latency environment.
 
-Let's try 10M nodes, 100M edges:
+Let's try 1M nodes, 10M edges:
 
 ```
 Echidnatron% cargo run --release --example bfs -- 10000000 100000000 1000 inspect
@@ -109,7 +109,7 @@ We are now seeing the changes to the node distances for each batch of 1000 chang
 
 ## Data parallelism
 
-Differential dataflow is built on [timely dataflow](https://github.com/frankmcsherry/timely-dataflow), a distributed data-parallel dataflow platform. Consequently, it distributes over multiple threads, processes, and computers. The additional resources increase the throughput as more workers contribute, but may reduce the minimal latency for small updates as more workers must coordinate.
+Differential dataflow is built on [timely dataflow](https://github.com/frankmcsherry/timely-dataflow), a distributed data-parallel dataflow platform. Consequently, it distributes over multiple threads, processes, and computers. The additional resources allow larger computations to be processed more efficiently, but may limit the minimal latency for small updates, as more computations must coordinate.
 
 ## Roadmap
 
@@ -162,4 +162,3 @@ A successful implementation, experiment, and write-up for a Datalog-like join us
 ## Acknowledgements
 
 In addition to contributions to this repository, differential dataflow is based on work at the now defunct Microsoft Research lab in Silicon Valley. Collaborators have included: Martin Abadi, Paul Barham, Rebecca Isaacs, Michael Isard, Derek Murray, and Gordon Plotkin. Work on this project continued at the Systems Group of ETH Zürich, and was informed by discussions with Zaheer Chothia, Andrea Lattuada, John Liagouris, and Darko Makreshanski.
->>>>>>> master
