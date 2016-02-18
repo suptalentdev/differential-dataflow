@@ -14,6 +14,7 @@ use timely_sort::{LSBRadixSorter, Unsigned};
 use collection::{LeastUpperBound, Lookup};
 use collection::count::{Count, Offset};
 use collection::compact::Compact;
+use collection::trace::Trace;
 
 /// Extension trait for the `group` differential dataflow method
 pub trait Threshold<G: Scope, D: Data+Default+'static>
@@ -59,10 +60,8 @@ impl<G: Scope, D: Data+Default+'static> Threshold<G, D> for Collection<G, D> whe
             }
 
             while let Some((index, _count)) = notificator.next() {
-
                 // 2a. fetch any data associated with this time.
                 if let Some(mut queue) = inputs.remove_key(&index) {
-
                     // sort things; radix if many, .sort_by if few.
                     let compact = if queue.len() > 1 {
                         for element in queue.into_iter() {
@@ -81,12 +80,15 @@ impl<G: Scope, D: Data+Default+'static> Threshold<G, D> for Collection<G, D> whe
                         Compact::from_radix(&mut vec![vec], &|k| key2(k))
                     };
                     if let Some(compact) = compact {
-
+                        let mut stash = Vec::new();
                         for key in &compact.keys {
-                            for time in source.interesting_times(key, index.time()).iter() {
+                            stash.push(index.time());
+                            source.interesting_times(key, &index.time(), &mut stash);
+                            for time in &stash {
                                 let mut queue = to_do.entry_or_insert((*time).clone(), || { notificator.notify_at(index.delayed(time)); Vec::new() });
                                 queue.push((*key).clone());
                             }
+                            stash.clear();
                         }
 
                         source.set_difference(index.time(), compact);
@@ -96,10 +98,9 @@ impl<G: Scope, D: Data+Default+'static> Threshold<G, D> for Collection<G, D> whe
                 // we may need to produce output at index
                 let mut session = output.session(&index);
 
-
-                    // 2b. We must now determine for each interesting key at this time, how does the
-                    // currently reported output match up with what we need as output. Should we send
-                    // more output differences, and what are they?
+                // 2b. We must now determine for each interesting key at this time, how does the
+                // currently reported output match up with what we need as output. Should we send
+                // more output differences, and what are they?
 
                 // Much of this logic used to hide in `OperatorTrace` and `CollectionTrace`.
                 // They are now gone and simpler, respectively.
@@ -131,7 +132,6 @@ impl<G: Scope, D: Data+Default+'static> Threshold<G, D> for Collection<G, D> whe
                     }
                 }
             }
-
         }))
     }
 }

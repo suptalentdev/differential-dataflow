@@ -31,8 +31,9 @@
 //! })
 //! ```
 
+use rc::Rc;
+use std::cell::RefCell;
 use std::default::Default;
-// use std::hash::Hasher;
 use std::collections::HashMap;
 use std::ops::DerefMut;
 
@@ -41,192 +42,115 @@ use itertools::Itertools;
 use ::{Data, Collection, Delta};
 use timely::dataflow::*;
 use timely::dataflow::operators::{Map, Unary};
-use timely::dataflow::channels::pact::Exchange;
+use timely::dataflow::channels::pact::{Exchange, Pipeline};
 use timely_sort::{LSBRadixSorter, Unsigned};
 
-use collection::{LeastUpperBound, Lookup, Trace, Offset};
+use collection::{LeastUpperBound, Lookup, Trace, BasicTrace, Offset};
 use collection::trace::CollectionIterator;
-
-use iterators::coalesce::Coalesce;
+use collection::basic::DifferenceIterator;
 use collection::compact::Compact;
 
+use iterators::coalesce::Coalesce;
+
+use operators::arrange::{Arranged, ArrangeByKey};
+
 /// Extension trait for the `group` differential dataflow method
-pub trait Group<G: Scope, K: Data, V: Data> : GroupBy<G, (K,V)>
+pub trait Group<G: Scope, K: Data, V: Data>// : GroupByCore<G, (K,V)>
     where G::Timestamp: LeastUpperBound {
 
     /// Groups records by their first field, and applies reduction logic to the associated values.
+    ///
+    /// It would be nice for this to be generic over possible arrangements of data, but it seems that Rust
+    /// ICEs when I try this. I'm not exactly sure how one would specify the arrangement (the type is used
+    /// in `logic`, by way of its associated iterator types, but not clearly enough to drive type inference),
+    /// but we don't have that problem yet anyhow.
+    ///
+    /// In any case, it would be great if the same implementation could handle `(K,V)` pairs and `K` elements
+    /// treated as `(K, ())` pairs.
     fn group<L, V2: Data>(&self, logic: L) -> Collection<G, (K,V2)>
-        where L: Fn(&K, &mut CollectionIterator<V>, &mut Vec<(V2, Delta)>)+'static;
+        where L: Fn(&K, &mut CollectionIterator<DifferenceIterator<V>>, &mut Vec<(V2, Delta)>)+'static;
 }
 
 impl<G: Scope, K: Data+Default, V: Data+Default> Group<G, K, V> for Collection<G, (K,V)>
-where G::Timestamp: LeastUpperBound {
+where G::Timestamp: LeastUpperBound 
+{
     fn group<L, V2: Data>(&self, logic: L) -> Collection<G, (K,V2)>
-        where L: Fn(&K, &mut CollectionIterator<V>, &mut Vec<(V2, Delta)>)+'static {
-            self.group_by_core(
-                |x| x,
-                |&(ref k,_)| k.hashed(),
-                |k| k.hashed(),
-                |k,v2| ((*k).clone(), (*v2).clone()),
-                |_| HashMap::new(),//RHHMap::new(|x: &K| x.hashed() as usize),
-                logic
-            )
+        where L: Fn(&K, &mut CollectionIterator<DifferenceIterator<V>>, &mut Vec<(V2, Delta)>)+'static {
+            self.arrange_by_key(|k| k.hashed(), |_| HashMap::new())
+                .group(|k| k.hashed(), |_| HashMap::new(), logic)
+                .as_collection()
     }
 }
 
-pub trait GroupUnsigned<G: Scope, U: Unsigned+Data+Default, V: Data> : GroupBy<G, (U,V)>
+
+/// Extension trait for the `group_u` differential dataflow method.
+pub trait GroupUnsigned<G: Scope, U: Unsigned+Data+Default, V: Data>
     where G::Timestamp: LeastUpperBound {
+    /// Groups records by their first field, when this field implements `Unsigned`. 
+    ///
+    /// This method uses a `Vec<Option<_>>` as its internal storage, allocating
+    /// enough memory to directly index based on the first fields. This can be 
+    /// very useful when these fields are small integers, but it can be expensive
+    /// if they are large and sparse.
     fn group_u<L, V2: Data>(&self, logic: L) -> Collection<G, (U, V2)>
-        where L: Fn(&U, &mut CollectionIterator<V>, &mut Vec<(V2, i32)>)+'static {
-            self.group_by_core(
-                |x| x,
-                |&(ref k,_)| k.as_u64(),
-                |k| k.clone(),
-                |k, v| (k.clone(), (*v).clone()),
-                |x| (Vec::new(), x),
-                logic)
-    }
+        where L: Fn(&U, &mut CollectionIterator<DifferenceIterator<V>>, &mut Vec<(V2, i32)>)+'static;
 }
 
-// implement `GroupBy` for any stream implementing `Unary` and `Map` (most of them).
-impl<G: Scope, U: Unsigned+Data+Default, V: Data, S> GroupUnsigned<G, U, V> for S
-where G::Timestamp: LeastUpperBound,
-      S: GroupBy<G, (U,V)> { }
-
-
-// implement `GroupBy` for any collection.
-impl<G: Scope, D1: Data> GroupBy<G, D1> for Collection<G, D1>
+impl<G: Scope, U: Unsigned+Data+Default, V: Data> GroupUnsigned<G, U, V> for Collection<G, (U,V)> 
 where G::Timestamp: LeastUpperBound {
-    fn group_by_u<
-        U:     Data+Unsigned+Default,
-        V1:    Data,
-        V2:    Data,
-        D2:    Data,
-        KV:    Fn(D1)->(U,V1)+'static,
-        Logic: Fn(&U, &mut CollectionIterator<V1>, &mut Vec<(V2, i32)>)+'static,
-        Reduc: Fn(&U, &V2)->D2+'static,
-    >
-            (&self, kv: KV, reduc: Reduc, logic: Logic) -> Collection<G, D2> {
-                self.map(kv)
-                    .group_by_core(|x| x,
-                                    |&(ref k,_)| k.as_u64(),
-                                    |k| k.clone(),
-                                    reduc,
-                                    |x| (Vec::new(), x),
-                                    logic)
-    }
+    fn group_u<L, V2: Data>(&self, logic: L) -> Collection<G, (U, V2)>
+        where L: Fn(&U, &mut CollectionIterator<DifferenceIterator<V>>, &mut Vec<(V2, i32)>)+'static {
+            self.arrange_by_key(|k| k.as_u64(), |x| (Vec::new(), x))
+                .group(|k| k.as_u64(), |x| (Vec::new(), x), logic)
+                .as_collection()
+        }
 }
 
 
-/// Extension trait for the `group_by` and `group_by_u` differential dataflow methods.
-pub trait GroupBy<G: Scope, D1: Data> : GroupByCore<G, D1>
-where G::Timestamp: LeastUpperBound {
-
-    /// Groups input records together by key and applies a reduction function.
+/// Extension trait for the `group` operator on `Arrange<_>` data.
+pub trait GroupArranged<G: Scope, K: Data, V: Data> {
+    /// Groups arranged data using a key hash function, a lookup generator, and user logic.
     ///
-    /// `group_by` transforms a stream of records of type `D1` into a stream of records of type `D2`,
-    /// by first transforming each input record into a `(key, val): (K, V1)` pair. For each key with
-    /// some values, `logic` is invoked on the key and an value enumerator which presents `(V1, i32)`
-    /// pairs, indicating for each value its multiplicity. `logic` is expected to populate its third
-    /// argument, a `&mut Vec<(V2, i32)>` indicating multiplicities of output records. Finally, for
-    /// each `(key,val) : (K,V2)` pair produced, `reduc` is applied to produce an output `D2` record.
-    ///
-    /// This all may seem overcomplicated, and it may indeed become simpler in the future. For the
-    /// moment it is designed to allow as much programmability as possible.
-    fn group_by<
-        K:     Data,        //  type of the key
-        V1:    Data,     //  type of the input value
-        V2:    Data,     //  type of the output value
-        D2:    Data,                                //  type of the output data
-        KV:    Fn(D1)->(K,V1)+'static,              //  function from data to (key,val)
-        Part:  Fn(&D1)->u64+'static,                //  partitioning function; should match KH
-        U:     Unsigned+Default,
-        KH:    Fn(&K)->U+'static,                   //  partitioning function for key; should match Part.
-
-        // user-defined operator logic, from a key and value iterator, populating an output vector.
-        Logic: Fn(&K, &mut CollectionIterator<V1>, &mut Vec<(V2, i32)>)+'static,
-
-        // function from key and output value to output data.
-        Reduc: Fn(&K, &V2)->D2+'static,
-    >
-    (&self, kv: KV, part: Part, key_h: KH, reduc: Reduc, logic: Logic) -> Collection<G, D2> {
-        self.group_by_core(kv, part, key_h, reduc, |_| HashMap::new(), logic)
-    }
-
-    /// A specialization of the `group_by` method to the case that the key type `K` is an unsigned
-    /// integer, and the strategy for indexing by key is simply to index into a vector.
-    fn group_by_u<
-        U:     Data+Unsigned+Default,
-        V1:    Data,
+    /// This method is used by `group` and `group_u` as defined on `Collection`, and it can
+    /// also be called directly by user code that wants access to the arranged output. This
+    /// can be helpful when the resulting data are re-used immediately with the same keys. 
+    fn group<V2, U, KH, Look, LookG, Logic>(&self, key_h: KH, look: LookG, logic: Logic) -> Arranged<G, BasicTrace<K,G::Timestamp,V2,Look>> 
+    where
+        G::Timestamp: LeastUpperBound,
         V2:    Data,
-        D2:    Data,
-        KV:    Fn(D1)->(U,V1)+'static,
-        Logic: Fn(&U, &mut CollectionIterator<V1>, &mut Vec<(V2, i32)>)+'static,
-        Reduc: Fn(&U, &V2)->D2+'static,
-    >
-            (&self, kv: KV, reduc: Reduc, logic: Logic) -> Collection<G, D2>;
-}
-
-pub trait GroupByCore<G: Scope, D1: Data> {
-
-    fn group_by_core<
-        K:     Data,
-        V1:    Data,
-        V2:    Data,
-        D2:    Data,
-        KV:    Fn(D1)->(K,V1)+'static,
-        Part:  Fn(&D1)->u64+'static,
         U:     Unsigned+Default,
         KH:    Fn(&K)->U+'static,
         Look:  Lookup<K, Offset>+'static,
         LookG: Fn(u64)->Look,
-        Logic: Fn(&K, &mut CollectionIterator<V1>, &mut Vec<(V2, i32)>)+'static,
-        Reduc: Fn(&K, &V2)->D2+'static,
-    >
-    (&self, kv: KV, part: Part, key_h: KH, reduc: Reduc, look: LookG, logic: Logic) -> Collection<G, D2>;
-
+        Logic: Fn(&K, &mut CollectionIterator<DifferenceIterator<V>>, &mut Vec<(V2, i32)>)+'static;
 }
 
-impl<G: Scope, D1: Data> GroupByCore<G, D1> for Collection<G, D1> where G::Timestamp: LeastUpperBound {
+impl<G, K, V, L> GroupArranged<G, K, V> for Arranged<G, BasicTrace<K, G::Timestamp, V, L>>
+where 
+    G: Scope,
+    K: Data,
+    V: Data,
+    L: Lookup<K, Offset>+'static,
+    G::Timestamp: LeastUpperBound {
 
-    /// The lowest level `group*` implementation, which is parameterized by the type of storage to
-    /// use for mapping keys `K` to `Offset`, an internal `CollectionTrace` type. This method should
-    /// probably rarely be used directly.
-    fn group_by_core<
-        K:     Data,
-        V1:    Data,
+    fn group<V2, U, KH, Look, LookG, Logic>(&self, key_h: KH, look: LookG, logic: Logic) -> Arranged<G, BasicTrace<K,G::Timestamp,V2,Look>> 
+    where
         V2:    Data,
-        D2:    Data,
-        KV:    Fn(D1)->(K,V1)+'static,
-        Part:  Fn(&D1)->u64+'static,
         U:     Unsigned+Default,
         KH:    Fn(&K)->U+'static,
         Look:  Lookup<K, Offset>+'static,
         LookG: Fn(u64)->Look,
-        Logic: Fn(&K, &mut CollectionIterator<V1>, &mut Vec<(V2, i32)>)+'static,
-        Reduc: Fn(&K, &V2)->D2+'static,
-    >
-    (&self, kv: KV, part: Part, key_h: KH, reduc: Reduc, look: LookG, logic: Logic) -> Collection<G, D2> {
+        Logic: Fn(&K, &mut CollectionIterator<DifferenceIterator<V>>, &mut Vec<(V2, i32)>)+'static {
 
-        // A pair of source and result `CollectionTrace` instances.
-        // TODO : The hard-coded 0 means we don't know how many bits we can shave off of each int
-        // TODO : key, which is fine for `HashMap` but less great for integer keyed maps, which use
-        // TODO : dense vectors (sparser as number of workers increases).
-        // TODO : At the moment, we don't have access to the stream's underlying .scope() method,
-        // TODO : which is what would let us see the number of peers, because we only know that
-        // TODO : the type also implements the `Unary` and `Map` traits, not that it is a `Stream`.
-        // TODO : We could implement this just for `Stream`, but would have to repeat the trait
-        // TODO : method signature boiler-plate, rather than use default implemenations.
-        // let mut trace =  OperatorTrace::<K, G::Timestamp, V1, V2, Look>::new(|| look(0));
-
-        let peers = self.inner.scope().peers();
+        let peers = self.stream.scope().peers();
         let mut log_peers = 0;
         while (1 << (log_peers + 1)) <= peers {
             log_peers += 1;
         }
 
-        let mut source = Trace::new(look(log_peers));
-        let mut result = Trace::new(look(log_peers));
+        let source = self.trace.clone();
+        let result = Rc::new(RefCell::new(BasicTrace::new(look(log_peers))));
+        let target = result.clone();
 
         // A map from times to received (key, val, wgt) triples.
         let mut inputs = Vec::new();
@@ -236,101 +160,76 @@ impl<G: Scope, D1: Data> GroupByCore<G, D1> for Collection<G, D1> where G::Times
 
         // temporary storage for operator implementations to populate
         let mut buffer = vec![];
-        let mut heap1 = vec![];
-        let mut heap2 = vec![];
-
-        // create an exchange channel based on the supplied Fn(&D1)->u64.
-        let exch = Exchange::new(move |&(ref x,_)| part(x));
-
-        let mut sorter = LSBRadixSorter::new();
 
         // fabricate a data-parallel operator using the `unary_notify` pattern.
-        Collection::new(self.inner.unary_notify(exch, "GroupBy", vec![], move |input, output, notificator| {
+        let stream = self.stream.unary_notify(Pipeline, "GroupArranged", vec![], move |input, output, notificator| {
 
-            // 1. read each input, and stash it in our staging area
+            // 1. read each input, and stash it in our staging area.
+            // only stash the keys, because vals etc are in self.trace
             while let Some((time, data)) = input.next() {
-                inputs.entry_or_insert(time.time(), || Vec::new())
-                      .push(::std::mem::replace(data.deref_mut(), Vec::new()));
-                notificator.notify_at(time);
+                inputs.entry_or_insert(time.time(), || { notificator.notify_at(time); data.drain(..).next().unwrap().0 });
             }
 
             // 2. go through each time of interest that has reached completion
             // times are interesting either because we received data, or because we conclude
             // in the processing of a time that a future time will be interesting.
-            while let Some((index, _count)) = notificator.next() {
+            while let Some((capability, _count)) = notificator.next() {
 
-                // 2a. fetch any data associated with this time.
-                if let Some(mut queue) = inputs.remove_key(&index) {
+                let time = capability.time();
 
-                    // sort things; radix if many, .sort_by if few.
-                    let compact = if queue.len() > 1 {
-                        for element in queue.into_iter() {
-                            sorter.extend(element.into_iter().map(|(d,w)| (kv(d),w)), &|x| key_h(&(x.0).0));
-                        }
-                        let mut sorted = sorter.finish(&|x| key_h(&(x.0).0));
-                        let result = Compact::from_radix(&mut sorted, &|k| key_h(k));
-                        sorted.truncate(256);
-                        sorter.recycle(sorted);
-                        result
-                    }
-                    else {
-                        let mut vec = queue.pop().unwrap();
-                        let mut vec = vec.drain(..).map(|(d,w)| (kv(d),w)).collect::<Vec<_>>();
-                        vec.sort_by(|x,y| key_h(&(x.0).0).cmp(&key_h((&(y.0).0))));
-                        Compact::from_radix(&mut vec![vec], &|k| key_h(k))
-                    };
+                // 2a. If we received any keys, determine the interesting times for each.
+                //     We then enqueue the keys at the corresponding time, for use later.
+                if let Some(queue) = inputs.remove_key(&time) {
 
-                    if let Some(compact) = compact {
-
-                        for key in &compact.keys {
-                            for time in source.interesting_times(key, index.time()).iter() {
-                                let mut queue = to_do.entry_or_insert((*time).clone(), || { notificator.notify_at(index.delayed(time)); Vec::new() });
-                                queue.push((*key).clone());
+                    let source = source.borrow();
+                    let mut stash = Vec::new();
+                    for key in queue {
+                        if source.get_difference(&key, &time).is_some() {
+                            stash.push(capability.time());
+                            source.interesting_times(&key, &time, &mut stash);
+                            for new_time in &stash {
+                                to_do.entry_or_insert(time.clone(), || { notificator.notify_at(capability.delayed(new_time)); Vec::new() })
+                                     .push(key.clone());
                             }
+                            stash.clear();
                         }
-
-                        // add the accumulation to the trace source.
-                        // println!("group1");
-                        source.set_difference(index.time(), compact);
                     }
                 }
 
-                // 2b. We must now determine for each interesting key at this time, how does the
-                // currently reported output match up with what we need as output. Should we send
-                // more output differences, and what are they?
+                // 2b. Process any interesting keys at this time.
+                if let Some(mut keys) = to_do.remove_key(&time) {
 
-                if let Some(mut keys) = to_do.remove_key(&index) {
-
-                    // we may need to produce output at index
-                    let mut session = output.session(&index);
-
-                    // we would like these keys in a particular order.
+                    // We would like these keys in a particular order. 
+                    // We also want to de-duplicate them, in case there are dupes. 
                     keys.sort_by(|x,y| (key_h(&x), x).cmp(&(key_h(&y), y)));
                     keys.dedup();
 
                     // accumulations for installation into result
                     let mut accumulation = Compact::new(0,0);
 
+                    // borrow `source` to avoid constant re-borrowing.
+                    let mut source_borrow = source.borrow_mut();
+
                     for key in keys {
 
                         // acquire an iterator over the collection at `time`.
-                        let mut input = unsafe { source.get_collection_using(&key, &index.time(), &mut heap1) };
+                        let mut input = source_borrow.get_collection(&key, &time);
 
-                        // if we have some data, invoke logic to populate self.dst
+                        // if we have some input data, invoke logic to populate buffer.
                         if input.peek().is_some() { logic(&key, &mut input, &mut buffer); }
 
+                        // sort the buffer, because we can't trust user code to do that.
                         buffer.sort_by(|x,y| x.0.cmp(&y.0));
 
                         // push differences in to Compact.
                         let mut compact = accumulation.session();
-                        for (val, wgt) in Coalesce::coalesce(unsafe { result.get_collection_using(&key, &index.time(), &mut heap2) }
+                        for (val, wgt) in Coalesce::coalesce(target.borrow_mut()
+                                                                   .get_collection(&key, &time)
                                                                    .map(|(v, w)| (v,-w))
                                                                    .merge_by(buffer.iter().map(|&(ref v, w)| (v, w)), |x,y| {
                                                                         x.0 <= y.0
                                                                    }))
                         {
-                            let result = (reduc(&key, val), wgt);
-                            session.give(result);
                             compact.push(val.clone(), wgt);
                         }
                         compact.done(key);
@@ -338,10 +237,13 @@ impl<G: Scope, D1: Data> GroupByCore<G, D1> for Collection<G, D1> where G::Times
                     }
 
                     if accumulation.vals.len() > 0 {
-                        result.set_difference(index.time(), accumulation);
+                        output.session(&capability).give((accumulation.keys.clone(), accumulation.cnts.clone(), accumulation.vals.clone()));
+                        target.borrow_mut().set_difference(time, accumulation);
                     }
                 }
             }
-        }))
+        });
+
+        Arranged { stream: stream, trace: result }
     }
 }
