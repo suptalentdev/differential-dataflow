@@ -14,6 +14,7 @@ pub mod layers;
 
 use ::Ring;
 pub use self::cursor::Cursor;
+pub use self::description::Description;
 
 // 	The traces and batch and cursors want the flexibility to appear as if they manage certain types of keys and 
 // 	values and such, while perhaps using other representations, I'm thinking mostly of wrappers around the keys
@@ -75,6 +76,8 @@ pub trait Batch<K, V, T, R> where Self: ::std::marker::Sized {
 	fn cursor(&self) -> Self::Cursor;
 	/// The number of updates in the batch.
 	fn len(&self) -> usize;
+	/// Describes the times of the updates in the batch.
+	fn description(&self) -> &Description<T>;
 }
 
 /// Functionality for collecting and batching updates.
@@ -89,8 +92,8 @@ pub trait Batcher<K, V, T, R, Output: Batch<K, V, T, R>> {
 			self.push(item);
 		}
 	}
-	/// Returns all updates not greater or equal to an element of `upper`.
-	fn seal(&mut self, upper: &[T]) -> Output;
+	/// Returns the batch between `lower` and `upper`.
+	fn seal(&mut self, lower: &[T], upper: &[T]) -> Output;
 	/// Returns the lower envelope of contained update times.
 	fn frontier(&mut self) -> &[T];
 }
