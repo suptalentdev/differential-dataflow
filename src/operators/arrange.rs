@@ -22,17 +22,14 @@
 //! lot like a trace, though this isn't beatifully masked at the moment (it can't implement the trait
 //! because we can't insert at it; it does implement `advance_by` and could implement `cursor`). 
 
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 use std::cell::RefCell;
 use std::default::Default;
-use std::ops::DerefMut;
-use std::collections::VecDeque;
 
 use timely::dataflow::*;
 use timely::dataflow::operators::Unary;
 use timely::dataflow::channels::pact::{Pipeline, Exchange};
 use timely::progress::frontier::MutableAntichain;
-use timely::progress::Timestamp;
 use timely::dataflow::operators::Capability;
 
 use timely_sort::Unsigned;
@@ -110,16 +107,6 @@ pub struct TraceHandle<K,V,T,R,Tr: Trace<K,V,T,R>> where T: Lattice+Ord+Clone+'s
     through_frontier: Vec<T>,
     /// Wrapped trace. Please be gentle when using.
     pub wrapper: Rc<RefCell<TraceWrapper<K,V,T,R,Tr>>>,
-
-    /// A shared list of shared queues; consumers add to the list, `arrange` deposits the current frontier
-    /// and perhaps a newly formed batch into each. The intent is that it can deposit progress information 
-    /// without a new batch, if its input frontier has advanced without any corresponding updates.
-    ///
-    /// Note that the references to the `VecDeque` queues are `Weak`, and they become invalid when the other
-    /// endpoint drops their reference. This makes the "hang up" procedure much simpler. The `arrange` operator
-    /// is the only one who takes mutable access to the queues, and is the one to be in charge of cleaning dead
-    /// references.
-    queues: Rc<RefCell<Vec<Weak<RefCell<VecDeque<(Vec<T>, Option<(T, <Tr as Trace<K,V,T,R>>::Batch)>)>>>>>>,
 }
 
 impl<K,V,T,R,Tr: Trace<K,V,T,R>> TraceHandle<K,V,T,R,Tr> where T: Lattice+Ord+Clone+'static {
@@ -134,7 +121,6 @@ impl<K,V,T,R,Tr: Trace<K,V,T,R>> TraceHandle<K,V,T,R,Tr> where T: Lattice+Ord+Cl
             advance_frontier: advance_frontier.to_vec(),
             through_frontier: through_frontier.to_vec(),
             wrapper: Rc::new(RefCell::new(wrapper)),
-            queues: Rc::new(RefCell::new(Vec::new())),
         }
     }
     /// Sets frontier to now be elements in `frontier`.
@@ -159,71 +145,6 @@ impl<K,V,T,R,Tr: Trace<K,V,T,R>> TraceHandle<K,V,T,R,Tr> where T: Lattice+Ord+Cl
     pub fn cursor_through(&self, frontier: &[T]) -> Option<Tr::Cursor> {
         ::std::cell::RefCell::borrow(&self.wrapper).trace.cursor_through(frontier)
     }
-
-    /// Attaches a new shared queue to the trace.
-    ///
-    /// The queue will be immediately populated with existing batches from the trace, and until the reference 
-    /// is dropped will receive new batches as produced by the source `arrange` operator.
-    pub fn new_listener(&self) -> Rc<RefCell<VecDeque<(Vec<T>, Option<(T, <Tr as Trace<K,V,T,R>>::Batch)>)>>> where T: Default {
-
-        // create a new queue for progress and batch information.
-        let mut queue = VecDeque::new();
-
-        // add the existing batches from the trace
-        self.wrapper.borrow().trace.map_batches(|batch| queue.push_back((vec![T::default()], Some((T::default(), batch.clone())))));
-
-        // wraps the queue in a ref-counted ref cell and enqueue/return it.
-        let reference = Rc::new(RefCell::new(queue));
-        let mut borrow = self.queues.borrow_mut();
-        borrow.push(Rc::downgrade(&reference));
-        reference
-    }
-
-    /// Creates a new source of data in the supplied scope, using the referenced trace as a source.
-    pub fn create_in<G: Scope<Timestamp=T>>(&mut self, scope: &G) -> Arranged<G, K, V, R, Tr> where T: Timestamp {
-        
-        let queue = self.new_listener();
-
-        let collection = ::timely::dataflow::operators::operator::source(scope, "ArrangedSource", move |capability| {
-            
-            // capabilities the source maintains.
-            let mut capabilities = vec![capability];
-            
-            move |output| {
-
-                let mut borrow = queue.borrow_mut();
-                while let Some((frontier, sent)) = borrow.pop_front() {
-                    // if data are associated, send em!
-                    if let Some((time, batch)) = sent {
-                        if let Some(cap) = capabilities.iter().find(|c| c.time().le(&time)) {
-                            let delayed = cap.delayed(&time);
-                            output.session(&delayed).give(BatchWrapper { item: batch });
-                        }
-                        else {
-                            panic!("failed to find capability for {:?} in {:?}", time, capabilities);
-                        }
-                    }
-
-                    // advance capabilities to look like `frontier`.
-                    let mut new_capabilities = Vec::new();
-                    for time in frontier.iter() {
-                        if let Some(cap) = capabilities.iter().find(|c| c.time().le(&time)) {
-                            new_capabilities.push(cap.delayed(&time));
-                        }
-                        else {
-                            panic!("failed to find capability for {:?} in {:?}", time, capabilities);
-                        }
-                    }
-                    capabilities = new_capabilities;
-                }
-            }
-        });
-
-        Arranged {
-            stream: collection,
-            trace: self.clone(),
-        }
-    }
 }
 
 impl<K, V, T: Lattice+Ord+Clone, R, Tr: Trace<K, V, T, R>> Clone for TraceHandle<K, V, T, R, Tr> {
@@ -235,7 +156,6 @@ impl<K, V, T: Lattice+Ord+Clone, R, Tr: Trace<K, V, T, R>> Clone for TraceHandle
             advance_frontier: self.advance_frontier.clone(),
             through_frontier: self.through_frontier.clone(),
             wrapper: self.wrapper.clone(),
-            queues: self.queues.clone(),
         }
     }
 }
@@ -335,11 +255,7 @@ impl<G: Scope, K: Data+Hashable, V: Data, R: Diff> Arrange<G, K, V, R> for Colle
 
         // create a trace to share with downstream consumers.
         let handle = TraceHandle::new(empty_trace, &[<G::Timestamp as Lattice>::min()], &[<G::Timestamp as Lattice>::min()]);
-
-        // acquire local downgraded copies of the references. 
-        // downgrading means that these instances will not keep the targets alive, especially important for the trace.
         let source = Rc::downgrade(&handle.wrapper);
-        let queues = Rc::downgrade(&handle.queues);
 
         // Where we will deposit received updates, and from which we extract batches.
         let mut batcher = <T::Batch as Batch<K,V,G::Timestamp,R>>::Batcher::new();
@@ -363,7 +279,7 @@ impl<G: Scope, K: Data+Hashable, V: Data, R: Diff> Arrange<G, K, V, R> for Colle
                     capabilities.push(cap);
                 }
 
-                batcher.push_batch(data.deref_mut());
+                batcher.push_batch(&mut data.replace_with(Vec::new()));
             });
 
             // Timely dataflow currently only allows one capability per message, and we may have multiple
@@ -405,17 +321,6 @@ impl<G: Scope, K: Data+Hashable, V: Data, R: Diff> Arrange<G, K, V, R> for Colle
                         source.upgrade().map(|trace| {
                             let trace: &mut T = &mut trace.borrow_mut().trace;
                             trace.insert(batch.clone())
-                        });
-
-                        // If we still have listeners, send each a copy of the input frontier and current batch.
-                        queues.upgrade().map(|queues| {
-                            let mut borrow = queues.borrow_mut();
-                            for queue in borrow.iter_mut() {
-                                queue.upgrade().map(|queue| {
-                                    queue.borrow_mut().push_back((notificator.frontier(0).to_vec(), Some((capabilities[index].time(), batch.clone()))));
-                                });
-                            }
-                            borrow.retain(|w| w.upgrade().is_some());
                         });
 
                         // send the batch to downstream consumers, empty or not.
