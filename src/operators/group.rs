@@ -15,15 +15,16 @@
 //!
 //! #Examples
 //!
-//! This example groups a stream of `(key,val)` pairs by `key`, and yields only the most frequently
+//! This example groups a collection of `(key,val)` pairs by `key`, and yields only the most frequently
 //! occurring value for each key.
 //!
 //! ```ignore
-//! stream.group(|key, vals, output| {
+//! collection.group(|key, vals, output| {
 //!     output.push(vals.iter().max_by_key(|&(_val, wgt)| wgt).unwrap());
 //! })
 //! ```
 
+// use std::rc::Rc;
 use std::fmt::Debug;
 use std::default::Default;
 
@@ -37,15 +38,17 @@ use timely::dataflow::channels::pact::Pipeline;
 use timely::dataflow::operators::Capability;
 use timely_sort::Unsigned;
 
-use operators::arrange::{Arrange, Arranged, ArrangeByKey, ArrangeBySelf, BatchWrapper, TraceHandle};
+use operators::arrange::{Arrange, Arranged, ArrangeByKey, ArrangeBySelf, BatchWrapper, TraceAgent};
 use lattice::Lattice;
-use trace::{Batch, Cursor, Trace, Builder};
+use trace::{Batch, BatchReader, Cursor, Trace, Builder};
 use trace::cursor::cursor_list::CursorList;
 // use trace::implementations::hash::HashValSpine as DefaultValTrace;
 // use trace::implementations::hash::HashKeySpine as DefaultKeyTrace;
 use trace::implementations::ord::OrdValSpine as DefaultValTrace;
 use trace::implementations::ord::OrdKeySpine as DefaultKeyTrace;
 
+use trace::TraceReader;
+use trace::wrappers::rc::TraceRc;
 
 /// Extension trait for the `group` differential dataflow method.
 pub trait Group<G: Scope, K: Data, V: Data, R: Diff> where G::Timestamp: Lattice+Ord {
@@ -53,6 +56,8 @@ pub trait Group<G: Scope, K: Data, V: Data, R: Diff> where G::Timestamp: Lattice
     fn group<L, V2: Data, R2: Diff>(&self, logic: L) -> Collection<G, (K, V2), R2>
         where L: Fn(&K, &[(V, R)], &mut Vec<(V2, R2)>)+'static;
     /// Groups records by their first field, and applies reduction logic to the associated values.
+    /// 
+    /// This method is a specialization for when the key is an unsigned integer fit for distributing the data.
     fn group_u<L, V2: Data, R2: Diff>(&self, logic: L) -> Collection<G, (K, V2), R2>
         where L: Fn(&K, &[(V, R)], &mut Vec<(V2, R2)>)+'static, K: Unsigned+Copy;
 }
@@ -80,6 +85,8 @@ pub trait Distinct<G: Scope, K: Data> where G::Timestamp: Lattice+Ord {
     /// Reduces the collection to one occurrence of each distinct element.
     fn distinct(&self) -> Collection<G, K, isize>;
     /// Reduces the collection to one occurrence of each distinct element.
+    /// 
+    /// This method is a specialization for when the key is an unsigned integer fit for distributing the data.
     fn distinct_u(&self) -> Collection<G, K, isize> where K: Unsigned+Copy;
 }
 
@@ -104,6 +111,8 @@ pub trait Count<G: Scope, K: Data, R: Diff> where G::Timestamp: Lattice+Ord {
     /// Counts the number of occurrences of each element.
     fn count(&self) -> Collection<G, (K, R), isize>;
     /// Counts the number of occurrences of each element.
+    /// 
+    /// This method is a specialization for when the key is an unsigned integer fit for distributing the data.
     fn count_u(&self) -> Collection<G, (K, R), isize> where K: Unsigned+Copy;
 }
 
@@ -123,14 +132,18 @@ impl<G: Scope, K: Data+Default+Hashable, R: Diff> Count<G, K, R> for Collection<
 }
 
 
-/// Extension trace for the group_arranged differential dataflow method.
+/// Extension trait for the `group_arranged` differential dataflow method.
 pub trait GroupArranged<G: Scope, K: Data, V: Data, R: Diff> where G::Timestamp: Lattice+Ord {
     /// Applies `group` to arranged data, and returns an arrangement of output data.
-    fn group_arranged<L, V2, T2, R2>(&self, logic: L, empty: T2) -> Arranged<G, K, V2, R2, T2>
+    ///
+    /// This method is used by the more ergonomic `group`, `distinct`, and `count` methods, although
+    /// it can be very useful if one needs to manually attach and re-use existing arranged collections.
+    fn group_arranged<L, V2, T2, R2>(&self, logic: L, empty: T2) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
         where
             V2: Data,
             R2: Diff,
             T2: Trace<K, V2, G::Timestamp, R2>+'static,
+            T2::Batch: Batch<K, V2, G::Timestamp, R2>,
             L: Fn(&K, &[(V, R)], &mut Vec<(V2, R2)>)+'static
             ; 
 }
@@ -138,17 +151,23 @@ pub trait GroupArranged<G: Scope, K: Data, V: Data, R: Diff> where G::Timestamp:
 impl<G: Scope, K: Data, V: Data, T1, R: Diff> GroupArranged<G, K, V, R> for Arranged<G, K, V, R, T1>
 where 
     G::Timestamp: Lattice+Ord,
-    T1: Trace<K, V, G::Timestamp, R>+'static {
+    T1: TraceReader<K, V, G::Timestamp, R>+'static,
+    T1::Batch: BatchReader<K, V, G::Timestamp, R> {
         
-    fn group_arranged<L, V2, T2, R2>(&self, logic: L, empty: T2) -> Arranged<G, K, V2, R2, T2>
+    fn group_arranged<L, V2, T2, R2>(&self, logic: L, empty: T2) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
         where 
             V2: Data,
             R2: Diff,
             T2: Trace<K, V2, G::Timestamp, R2>+'static,
+            T2::Batch: Batch<K, V2, G::Timestamp, R2>,
             L: Fn(&K, &[(V, R)], &mut Vec<(V2, R2)>)+'static {
 
-        let mut source_trace = self.new_handle();
-        let mut output_trace = TraceHandle::new(empty, &[G::Timestamp::min()], &[G::Timestamp::min()]);
+        let mut source_trace = self.trace.clone();
+
+        let agent = TraceAgent::new(empty);
+        // let queues = Rc::downgrade(&agent.queues);
+
+        let mut output_trace = TraceRc::make_from(agent).0;
         let result_trace = output_trace.clone();
 
         // let mut thinker1 = history_replay_prior::HistoryReplayer::<V, V2, G::Timestamp, R, R2>::new();
@@ -412,7 +431,22 @@ where
                         let batch = builder.done(&lower_issued[..], &local_upper[..], &lower_issued[..]);
                         lower_issued = local_upper;
                         output.session(&capabilities[index]).give(BatchWrapper { item: batch.clone() });
-                        output_trace.wrapper.borrow_mut().trace.insert(batch);
+
+                        // use the trace agent to insert the batch and notify any listeners.
+                        output_trace.wrapper.borrow_mut().trace.insert_at(notificator.frontier(0), Some((capabilities[index].time().clone(), batch)));
+
+                        // // If we still have listeners, send each a copy of the input frontier and current batch.
+                        // queues.upgrade().map(|queues| {
+                        //     let mut borrow = queues.borrow_mut();
+                        //     for queue in borrow.iter_mut() {
+                        //         queue.upgrade().map(|queue| {
+                        //             queue.borrow_mut().push_back((notificator.frontier(0).to_vec(), Some((capabilities[index].time().clone(), batch.clone()))));
+                        //         });
+                        //     }
+                        //     borrow.retain(|w| w.upgrade().is_some());
+                        // });
+
+                        // output_trace.wrapper.borrow_mut().trace.trace.insert(batch);
                     }
                 }
 
