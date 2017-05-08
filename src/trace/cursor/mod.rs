@@ -25,8 +25,7 @@ pub trait Cursor<K, V, T, R> {
 	fn key(&self) -> &K;
 	/// A reference to the current value. Asserts if invalid.
 	fn val(&self) -> &V;
-	/// Applies `logic` to each pair of time and difference. Intended for mutation of the
-	/// closure's scope.
+	/// Applies `logic` to each pair of time and difference.
 	fn map_times<L: FnMut(&T, R)>(&mut self, logic: L);
 
 	/// Advances the cursor to the next key. Indicates if the key is valid.
