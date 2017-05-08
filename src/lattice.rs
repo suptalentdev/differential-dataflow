@@ -67,20 +67,6 @@ pub trait Lattice : PartialOrder {
     }
 }
 
-/// A carrier trait for totally ordered lattices.
-///
-/// Types that implement `TotalOrder` are stating that their `Lattice` is in fact a total order.
-/// This type is only used to restrict implementations to certain types of lattices.
-///
-/// This trait is automatically implemented for integer scalars, and for products of these types
-/// with "empty" timestamps (e.g. `RootTimestamp` and `()`). Be careful implementing this trait
-/// for your own timestamp types, as it may lead to the applicability of incorrect implementations.
-///
-/// Note that this trait is distinct from `Ord`; many implementors of `Lattice` also implement 
-/// `Ord` so that they may be sorted, deduplicated, etc. This implementation neither derives any
-/// information from an `Ord` implementation nor informs it in any way.
-pub trait TotalOrder : Lattice { }
-
 use timely::progress::nested::product::Product;
 
 impl<T1: Lattice, T2: Lattice> Lattice for Product<T1, T2> {
@@ -104,9 +90,6 @@ impl<T1: Lattice, T2: Lattice> Lattice for Product<T1, T2> {
     }
 }
 
-impl<T> TotalOrder for Product<RootTimestamp, T> where T: TotalOrder { } 
-impl<T> TotalOrder for Product<(), T> where T: TotalOrder { } 
-
 use timely::progress::timestamp::RootTimestamp;
 
 impl Lattice for RootTimestamp {
@@ -120,8 +103,6 @@ impl Lattice for RootTimestamp {
     fn meet(&self, _: &RootTimestamp) -> RootTimestamp { RootTimestamp }
 }
 
-impl TotalOrder for RootTimestamp { }
-
 impl Lattice for usize {
     #[inline(always)]
     fn min() -> usize { usize::min_value() }
@@ -132,8 +113,6 @@ impl Lattice for usize {
     #[inline(always)]
     fn meet(&self, other: &usize) -> usize { ::std::cmp::min(*self, *other) }
 }
-
-impl TotalOrder for usize { }
 
 impl Lattice for u64 {
     #[inline(always)]
@@ -146,8 +125,6 @@ impl Lattice for u64 {
     fn meet(&self, other: &u64) -> u64 { ::std::cmp::min(*self, *other) }
 }
 
-impl TotalOrder for u64 { }
-
 impl Lattice for u32 {
     #[inline(always)]
     fn min() -> u32 { u32::min_value() }
@@ -158,8 +135,6 @@ impl Lattice for u32 {
     #[inline(always)]
     fn meet(&self, other: &u32) -> u32 { ::std::cmp::min(*self, *other) }
 }
-
-impl TotalOrder for u32 { }
 
 impl Lattice for i32 {
     #[inline(always)]
@@ -172,8 +147,6 @@ impl Lattice for i32 {
     fn meet(&self, other: &i32) -> i32 { ::std::cmp::min(*self, *other) }
 }
 
-impl TotalOrder for i32 { }
-
 impl Lattice for () {
     #[inline(always)]
     fn min() -> () { () }
@@ -185,23 +158,21 @@ impl Lattice for () {
     fn meet(&self, _other: &()) -> () { () }
 }
 
-impl TotalOrder for () { }
+/// Extends `vector` to contain all joins of pairs of elements.
+pub fn close_under_join<T: Lattice>(vector: &mut Vec<T>) {
+    // compares each element to those elements after it.
+    let mut first = 0;
+    while first < vector.len() {
+        let mut next = first + 1;
+        while next < vector.len() {
+            let lub = vector[first].join(&vector[next]);
+            if !vector.contains(&lub) {
+                vector.push(lub);
+            }
 
-// /// Extends `vector` to contain all joins of pairs of elements.
-// pub fn close_under_join<T: Lattice>(vector: &mut Vec<T>) {
-//     // compares each element to those elements after it.
-//     let mut first = 0;
-//     while first < vector.len() {
-//         let mut next = first + 1;
-//         while next < vector.len() {
-//             let lub = vector[first].join(&vector[next]);
-//             if !vector.contains(&lub) {
-//                 vector.push(lub);
-//             }
+            next += 1;
+        }
 
-//             next += 1;
-//         }
-
-//         first += 1;
-//     }
-// }
+        first += 1;
+    }
+}
