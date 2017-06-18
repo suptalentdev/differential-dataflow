@@ -7,8 +7,6 @@ use std::rc::Rc;
 use std::default::Default;
 // use std::hash::Hasher;
 
-use owning_ref::OwningRef;
-
 use timely_sort::Unsigned;
 
 use ::hashable::{Hashable, HashOrdered};
@@ -42,7 +40,7 @@ const BLOAT_FACTOR : f64 = 1.1;
 #[derive(Debug)]
 pub struct HashedLayer<K: HashOrdered, L> {
 	/// Keys and offsets for the keys.
-	pub keys: Vec<Entry<K>>,	// track upper and lower bounds, because trickery is hard.
+	pub keys: Rc<Vec<Entry<K>>>,	// track upper and lower bounds, because trickery is hard.
 	/// A lower layer containing ranges of values.
 	pub vals: L,
 }
@@ -53,15 +51,15 @@ impl<K: HashOrdered, L> HashedLayer<K, L> {
 	fn upper(&self, index: usize) -> usize { self.keys[index].get_upper() }
 }
 
-impl<B, K: Clone+HashOrdered+Default, L: Trie<B>> Trie<B> for HashedLayer<K, L> {
+impl<K: Clone+HashOrdered+Default, L: Trie> Trie for HashedLayer<K, L> {
 	type Item = (K, L::Item);
-	type Cursor = HashedCursor<B, K, L::Cursor>;
-	type MergeBuilder = HashedBuilder<B, K, L::MergeBuilder>;
-	type TupleBuilder = HashedBuilder<B, K, L::TupleBuilder>;
+	type Cursor = HashedCursor<K, L::Cursor>;
+	type MergeBuilder = HashedBuilder<K, L::MergeBuilder>;
+	type TupleBuilder = HashedBuilder<K, L::TupleBuilder>;
 
 	fn keys(&self) -> usize { self.keys.len() }
 	fn tuples(&self) -> usize { self.vals.tuples() }
-	fn cursor_from(&self, owned_self: OwningRef<Rc<B>, Self>, lower: usize, upper: usize) -> Self::Cursor {
+	fn cursor_from(&self, lower: usize, upper: usize) -> Self::Cursor {
 
 		if lower < upper {
 
@@ -80,8 +78,8 @@ impl<B, K: Clone+HashOrdered+Default, L: Trie<B>> Trie<B> for HashedLayer<K, L> 
 				shift: shift,
 				bounds: (lower, upper),
 				pos: pos,
-				keys: owned_self.clone().map(|x| &x.keys),
-				child: self.vals.cursor_from(owned_self.map(|x| &x.vals), self.keys[pos].get_lower(), self.keys[pos].get_upper())
+				keys: self.keys.clone(),
+				child: self.vals.cursor_from(self.keys[pos].get_lower(), self.keys[pos].get_upper())
 			}
 		}
 		else {
@@ -89,8 +87,8 @@ impl<B, K: Clone+HashOrdered+Default, L: Trie<B>> Trie<B> for HashedLayer<K, L> 
 				shift: 0,
 				bounds: (0, 0),
 				pos: 0,
-				keys: owned_self.clone().map(|x| &x.keys), // &self.keys,
-				child: self.vals.cursor_from(owned_self.map(|x| &x.vals), 0, 0),
+				keys: self.keys.clone(),
+				child: self.vals.cursor_from(0, 0),
 			}
 		}
 	}
@@ -123,16 +121,15 @@ impl<K: HashOrdered> Entry<K> {
 }
 
 /// Assembles a layer of this 
-pub struct HashedBuilder<B, K: HashOrdered, L> {
+pub struct HashedBuilder<K: HashOrdered, L> {
 	temp: Vec<Entry<K>>,		// staging for building; densely packed here and then re-laid out in self.keys.
 	/// Entries in the hash map.
 	pub keys: Vec<Entry<K>>,	// keys and offs co-located because we expect to find the right answers fast.
 	/// A builder for the layer below.
 	pub vals: L,
-	_b: ::std::marker::PhantomData<B>,
 }
 
-impl<B, K: HashOrdered+Clone+Default, L> HashedBuilder<B, K, L> {
+impl<K: HashOrdered+Clone+Default, L> HashedBuilder<K, L> {
 
 	#[inline(always)]
 	fn _lower(&self, index: usize) -> usize {
@@ -144,7 +141,7 @@ impl<B, K: HashOrdered+Clone+Default, L> HashedBuilder<B, K, L> {
 	}
 }
 
-impl<B, K: HashOrdered+Clone+Default, L: Builder<B>> Builder<B> for HashedBuilder<B, K, L> {
+impl<K: HashOrdered+Clone+Default, L: Builder> Builder for HashedBuilder<K, L> {
 	type Trie = HashedLayer<K, L::Trie>;
 
 
@@ -223,20 +220,19 @@ impl<B, K: HashOrdered+Clone+Default, L: Builder<B>> Builder<B> for HashedBuilde
 		}
 
 		HashedLayer {
-			keys: self.keys,
+			keys: Rc::new(self.keys),
 			vals: vals,
 		}
 	}
 }
 
-impl<B, K: HashOrdered+Clone+Default, L: MergeBuilder<B>> MergeBuilder<B> for HashedBuilder<B, K, L> {
+impl<K: HashOrdered+Clone+Default, L: MergeBuilder> MergeBuilder for HashedBuilder<K, L> {
 
 	fn with_capacity(other1: &Self::Trie, other2: &Self::Trie) -> Self {
 		HashedBuilder {
 			temp: Vec::new(),
 			keys: Vec::with_capacity(other1.keys() + other2.keys()),
 			vals: L::with_capacity(&other1.vals, &other2.vals),
-			_b: ::std::marker::PhantomData,
 		}
 	}
 	/// Copies fully formed ranges (note plural) of keys from another trie.
@@ -317,16 +313,15 @@ impl<B, K: HashOrdered+Clone+Default, L: MergeBuilder<B>> MergeBuilder<B> for Ha
 }
 
 
-impl<B, K: HashOrdered+Clone+Default, L: TupleBuilder<B>> TupleBuilder<B> for HashedBuilder<B, K, L> {
+impl<K: HashOrdered+Clone+Default, L: TupleBuilder> TupleBuilder for HashedBuilder<K, L> {
 
 	type Item = (K, L::Item);
-	fn new() -> Self { HashedBuilder { temp: Vec::new(), keys: Vec::new(), vals: L::new(), _b: ::std::marker::PhantomData } }
+	fn new() -> Self { HashedBuilder { temp: Vec::new(), keys: Vec::new(), vals: L::new() } }
 	fn with_capacity(cap: usize) -> Self { 
 		HashedBuilder { 
 			temp: Vec::with_capacity(cap), 
 			keys: Vec::with_capacity(cap), 
-			vals: L::with_capacity(cap),
-			_b: ::std::marker::PhantomData,
+			vals: L::with_capacity(cap) 
 		} 
 	}
 	#[inline(always)]
@@ -347,7 +342,7 @@ impl<B, K: HashOrdered+Clone+Default, L: TupleBuilder<B>> TupleBuilder<B> for Ha
 	}
 }
 
-impl<B, K: HashOrdered+Clone+Default, L: MergeBuilder<B>> HashedBuilder<B, K, L> {
+impl<K: HashOrdered+Clone+Default, L: MergeBuilder> HashedBuilder<K, L> {
 	/// Moves other stuff into self.temp. Returns number of element consumed.
 	fn push_while_less(&mut self, other: &HashedLayer<K, L::Trie>, lower: usize, upper: usize, vs: &K) -> usize {
 
@@ -403,17 +398,17 @@ impl<B, K: HashOrdered+Clone+Default, L: MergeBuilder<B>> HashedBuilder<B, K, L>
 
 /// A cursor with a child cursor that is updated as we move.
 #[derive(Debug)]
-pub struct HashedCursor<B, K: HashOrdered, L: Cursor> {
+pub struct HashedCursor<K: HashOrdered, L: Cursor> {
 	shift: usize,			// amount by which to shift hashes.
 	bounds: (usize, usize),	// bounds of slice of self.keys.
 	pos: usize,				// <-- current cursor position.
 
-	keys: OwningRef<Rc<B>, Vec<Entry<K>>>,
+	keys: Rc<Vec<Entry<K>>>,
 	/// A cursor for the layer below this one.
 	pub child: L,
 }
 
-impl<B, K: HashOrdered, L: Cursor> Cursor for HashedCursor<B, K, L> {
+impl<K: HashOrdered, L: Cursor> Cursor for HashedCursor<K, L> {
 	type Key = K;
 	fn key(&self) -> &Self::Key { &self.keys[self.pos].key }
 	fn step(&mut self) {
