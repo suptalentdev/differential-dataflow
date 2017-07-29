@@ -16,7 +16,6 @@ pub mod consolidate;
 pub mod iterate;
 pub mod join;
 pub mod count;
-// pub mod min;
 
 use ::Diff;
 use lattice::Lattice;
@@ -36,12 +35,12 @@ use trace::{Cursor, consolidate};
 /// important in something like `join`.
 
 /// An accumulation of (value, time, diff) updates.
-struct EditList<'a, V: 'a, T, R> {
-    values: Vec<(&'a V, usize)>,
+struct EditList<V, T, R> {
+    values: Vec<(V, usize)>,
     edits: Vec<(T, R)>,
 }
 
-impl<'a, V:'a, T, R> EditList<'a, V, T, R> where T: Ord+Clone, R: Diff {
+impl<V, T, R> EditList<V, T, R> where T: Ord+Clone, R: Diff {
     /// Creates an empty list of edits.
     #[inline(always)]
     fn new() -> Self {
@@ -51,13 +50,13 @@ impl<'a, V:'a, T, R> EditList<'a, V, T, R> where T: Ord+Clone, R: Diff {
         }
     }
     /// Loads the contents of a cursor.
-    fn load<K, C, L>(&mut self, cursor: &mut C, storage: &'a C::Storage, logic: L)
+    fn load<K, C, L>(&mut self, cursor: &mut C, logic: L)
     where K: Eq, V: Clone, C: Cursor<K, V, T, R>, L: Fn(&T)->T { 
         self.clear();
-        while cursor.val_valid(storage) {
-            cursor.map_times(storage, |time1, diff1| self.push(logic(time1), diff1));
-            self.seal(cursor.val(storage));
-            cursor.step_val(storage);
+        while cursor.val_valid() {
+            cursor.map_times(|time1, diff1| self.push(logic(time1), diff1));
+            self.seal(cursor.val());
+            cursor.step_val();
         }
     }
     /// Clears the list of edits.
@@ -75,11 +74,11 @@ impl<'a, V:'a, T, R> EditList<'a, V, T, R> where T: Ord+Clone, R: Diff {
     }
     /// Associates all edits pushed since the previous `seal_value` call with `value`.
     #[inline(always)]
-    fn seal(&mut self, value: &'a V) {
+    fn seal(&mut self, value: &V) where V: Clone {
         let prev = self.values.last().map(|x| x.1).unwrap_or(0);
         consolidate_from(&mut self.edits, prev);
         if self.edits.len() > prev {
-            self.values.push((value, self.edits.len()));
+            self.values.push((value.clone(), self.edits.len()));
         }
     }
     fn map<F: FnMut(&V, &T, R)>(&self, mut logic: F) {
@@ -93,15 +92,15 @@ impl<'a, V:'a, T, R> EditList<'a, V, T, R> where T: Ord+Clone, R: Diff {
     }
 }
 
-struct ValueHistory2<'a, V: 'a, T, R> {
+struct ValueHistory2<V, T, R> {
 
-    edits: EditList<'a, V, T, R>,
+    edits: EditList<V, T, R>,
     history: Vec<(T, T, usize, usize)>,        // (time, meet, value_index, edit_offset)
     // frontier: FrontierHistory<T>,           // tracks frontiers of remaining times.
-    buffer: Vec<((&'a V, T), R)>,               // where we accumulate / collapse updates.
+    buffer: Vec<((V, T), R)>,               // where we accumulate / collapse updates.
 }
 
-impl<'a, V: Ord+Clone+'a, T: Lattice+Ord+Clone, R: Diff> ValueHistory2<'a, V, T, R> {
+impl<V: Ord+Clone, T: Lattice+Ord+Clone, R: Diff> ValueHistory2<V, T, R> {
     fn new() -> Self {
         ValueHistory2 {
             edits: EditList::new(), // empty; will swap out for real list later
@@ -114,9 +113,9 @@ impl<'a, V: Ord+Clone+'a, T: Lattice+Ord+Clone, R: Diff> ValueHistory2<'a, V, T,
         self.history.clear();
         self.buffer.clear();
     }
-    fn load<K, C, L>(&mut self, cursor: &mut C, storage: &'a C::Storage, logic: L)
+    fn load<K, C, L>(&mut self, cursor: &mut C, logic: L)
     where K: Eq, C: Cursor<K, V, T, R>, L: Fn(&T)->T { 
-        self.edits.load(cursor, storage, logic);
+        self.edits.load(cursor, logic);
         self.order();
     }
     /// Organizes history based on current contents of edits.
@@ -143,12 +142,12 @@ impl<'a, V: Ord+Clone+'a, T: Lattice+Ord+Clone, R: Diff> ValueHistory2<'a, V, T,
     fn time(&self) -> Option<&T> { self.history.last().map(|x| &x.0) }
     fn meet(&self) -> Option<&T> { self.history.last().map(|x| &x.1) }
     fn edit(&self) -> Option<(&V, &T, R)> { 
-        self.history.last().map(|&(ref t, _, v, e)| (self.edits.values[v].0, t, self.edits.edits[e].1))
+        self.history.last().map(|&(ref t, _, v, e)| (&self.edits.values[v].0, t, self.edits.edits[e].1))
     }
 
     fn step(&mut self) {
         let (time, _, value_index, edit_offset) = self.history.pop().unwrap();
-        self.buffer.push(((self.edits.values[value_index].0, time), self.edits.edits[edit_offset].1));
+        self.buffer.push(((self.edits.values[value_index].0.clone(), time), self.edits.edits[edit_offset].1));
     }
     fn step_while_time_is(&mut self, time: &T) -> bool {
         let mut found = false;

@@ -6,9 +6,12 @@
 
 pub mod ordered;
 pub mod ordered_leaf;
-// pub mod hashed;
-// pub mod weighted;
-// pub mod unordered;
+pub mod hashed;
+pub mod weighted;
+pub mod unordered;
+
+use std::rc::Rc;
+use owning_ref::{OwningRef, Erased};
 
 /// A collection of tuples, and types for building and enumerating them.
 ///
@@ -19,7 +22,7 @@ pub trait Trie  : ::std::marker::Sized {
 	/// The type of item from which the type is constructed.
 	type Item;
 	/// The type of cursor used to navigate the type.
-	type Cursor: Cursor<Self>;
+	type Cursor: Cursor;
 	/// The type used to merge instances of the type together.
 	type MergeBuilder: MergeBuilder<Trie=Self>;
 	/// The type used to assemble instances of the type from its `Item`s.
@@ -30,10 +33,10 @@ pub trait Trie  : ::std::marker::Sized {
 	/// The total number of tuples in the collection.
 	fn tuples(&self) -> usize;
 	/// Returns a cursor capable of navigating the collection.
-	fn cursor(&self) -> Self::Cursor { self.cursor_from(0, self.keys()) }
+	fn cursor(&self, owned_self: OwningRef<Rc<Erased>, Self>) -> Self::Cursor { self.cursor_from(owned_self, 0, self.keys()) }
 	/// Returns a cursor over a range of data, commonly used by others to restrict navigation to 
 	/// sub-collections.
-	fn cursor_from(&self, lower: usize, upper: usize) -> Self::Cursor;
+	fn cursor_from(&self, owned_self: OwningRef<Rc<Erased>, Self>, lower: usize, upper: usize) -> Self::Cursor;
 
 	/// Merges two collections into a third.
 	///
@@ -89,19 +92,19 @@ pub trait TupleBuilder : Builder {
 /// The precise meaning of this navigation is not defined by the trait. It is likely that having 
 /// navigated around, the cursor will be different in some other way, but the `Cursor` trait does
 /// not explain how this is so.
-pub trait Cursor<Storage> {
+pub trait Cursor {
 	/// The type revealed by the cursor.
 	type Key;
 	/// Reveals the current key.
-	fn key<'a>(&self, storage: &'a Storage) -> &'a Self::Key;
+	fn key(&self) -> &Self::Key;
 	/// Advances the cursor by one element.
-	fn step(&mut self, storage: &Storage);
+	fn step(&mut self);
 	/// Advances the cursor until the location where `key` would be expected.
-	fn seek(&mut self, storage: &Storage, key: &Self::Key);
+	fn seek(&mut self, key: &Self::Key);
 	/// Returns `true` if the cursor points at valid data. Returns `false` if the cursor is exhausted.
-	fn valid(&self, storage: &Storage) -> bool;
+	fn valid(&self) -> bool;
 	/// Rewinds the cursor to its initial state.
-	fn rewind(&mut self, storage: &Storage);
+	fn rewind(&mut self);
 	/// Repositions the cursor to a different range of values. 
-	fn reposition(&mut self, storage: &Storage, lower: usize, upper: usize);
+	fn reposition(&mut self, lower: usize, upper: usize);
 }

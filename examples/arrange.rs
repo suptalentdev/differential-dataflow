@@ -24,12 +24,10 @@ use differential_dataflow::operators::Consolidate;
 
 fn main() {
 
-    let nodes: u32 = std::env::args().nth(1).unwrap().parse().unwrap();
+    let nodes: usize = std::env::args().nth(1).unwrap().parse().unwrap();
     let edges: usize = std::env::args().nth(2).unwrap().parse().unwrap();
     let batch: usize = std::env::args().nth(3).unwrap().parse().unwrap();
-    let pre: usize = std::env::args().nth(4).unwrap().parse().unwrap();
-    let inspect: bool = std::env::args().position(|x| x == "inspect").is_some();
-
+    let pre: bool = std::env::args().nth(4).unwrap().parse().unwrap();
 
     // define a new timely dataflow computation. 
     timely::execute_from_args(std::env::args().skip(4), move |worker| {
@@ -62,7 +60,7 @@ fn main() {
                     if !handle.less_than(capability.time()) {
 
                         let mut time = capability.time().clone();
-                        // println!("{:?}\tintroducing edges for batch starting {:?}", timer.elapsed(), time);
+                        // println!("introducing edges for batch starting {:?}", time);
 
                         {   // scope to allow session to drop, un-borrow.
                             let mut session = output.session(&capability);
@@ -91,20 +89,24 @@ fn main() {
                             }
                         }
 
-                        // println!("downgrading {:?} to {:?}", capability, time);
                         capability.downgrade(&time);
                     }
                 }
             })
             .probe_with(&mut probe)
             .as_collection()
-            .arrange_by_key_u()
+            .arrange_by_key_hashed()
             .trace
         });
 
         println!("{:?}:\tloading edges", timer.elapsed());
 
-        for _ in 0 .. pre {
+        if pre {
+            worker.step();
+            worker.step();
+            worker.step();
+            worker.step();
+            worker.step();
             worker.step();
         }
 
@@ -122,10 +124,9 @@ fn main() {
                 let edges = edges.enter(&dists.scope());
                 let roots = roots.enter(&dists.scope());
 
-                dists.arrange_by_key_u()
-                     .join_core(&edges, |_k,l,d| Some((*d, l+1)))
+                dists.join_core(&edges, |_k,l,d| Some((*d, l+1)))
                      .concat(&roots)
-                     .group_u(|_, s, t| t.push((*s[0].0, 1)))
+                     .group_u(|_, s, t| t.push((s[0].0, 1)))
             })
             .map(|(_node, dist)| dist)
             .consolidate()
@@ -141,13 +142,9 @@ fn main() {
             let (input, query) = scope.new_collection();
 
             query.map(|x| (x, x))
-                 .arrange_by_key_u()
                  .join_core(&edges, |_n, &q, &d| Some((d, q)))
-                 .arrange_by_key_u()
                  .join_core(&edges, |_n, &q, &d| Some((d, q)))
-                 .arrange_by_key_u()
                  .join_core(&edges, |_n, &q, &d| Some((d, q)))
-                 .filter(move |_| inspect)
                  .map(|x| x.1)
                  .consolidate()
                  .inspect(|x| println!("{:?}", x))
@@ -166,7 +163,7 @@ fn main() {
         if batch > 0 {
             for round in 0 .. {
 
-                let mut time = query.time().clone();
+                let mut time = roots.time().clone();
 
                 // roots.insert(round % nodes);
                 if index == 0 {
@@ -184,7 +181,7 @@ fn main() {
 
                 worker.step_while(|| probe.less_than(&time));
 
-                println!("{:?}\tquery round {:?} complete", timer.elapsed(), round);
+                println!("{:?}\tquery round complete", timer.elapsed());
             }
         }
     }).unwrap();

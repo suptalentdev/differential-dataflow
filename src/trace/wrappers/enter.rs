@@ -74,12 +74,12 @@ where
         &self.stash2[..]
     }
 
-    fn cursor_through(&mut self, upper: &[Product<T, TInner>]) -> Option<(Self::Cursor, <Self::Cursor as Cursor<K, V, Product<T, TInner>, R>>::Storage)> {
+    fn cursor_through(&mut self, upper: &[Product<T, TInner>]) -> Option<Self::Cursor> {
         self.stash1.clear();
         for time in upper.iter() {
             self.stash1.push(time.outer.clone());
         }
-        self.trace.cursor_through(&self.stash1[..]).map(|(x,y)| (CursorEnter::new(x), y))
+        self.trace.cursor_through(&self.stash1[..]).map(|x| CursorEnter::new(x))
     }
 }
 
@@ -119,10 +119,7 @@ where B: BatchReader<K, V, T, R>, T: Clone+Default, TInner: Default {
 
     type Cursor = CursorEnter<K, V, T, R, B::Cursor, TInner>;
 
-    fn cursor(&self) -> (Self::Cursor, <Self::Cursor as Cursor<K, V, Product<T, TInner>, R>>::Storage) { 
-        let (cursor, storage) = self.batch.cursor();
-        (CursorEnter::new(cursor), storage) 
-    }
+    fn cursor(&self) -> Self::Cursor { CursorEnter::new(self.batch.cursor()) }
     fn len(&self) -> usize { self.batch.len() }
     fn description(&self) -> &Description<Product<T, TInner>> { &self.description }
 }
@@ -160,44 +157,41 @@ impl<K, V, T, R, C: Cursor<K, V, T, R>, TInner> CursorEnter<K, V, T, R, C, TInne
     }
 }
 
-impl<K, V, T, R, C, TInner> Cursor<K, V, Product<T, TInner>, R> for CursorEnter<K, V, T, R, C, TInner> 
-where 
-    C: Cursor<K, V, T, R>,
-    T: Clone {
-
-    type Storage = C::Storage;
+impl<K, V, T, R, C: Cursor<K, V, T, R>, TInner> Cursor<K, V, Product<T, TInner>, R> for CursorEnter<K, V, T, R, C, TInner> where T: Clone {
 
     #[inline(always)]
-    fn key_valid(&self, storage: &Self::Storage) -> bool { self.cursor.key_valid(storage) }
+    fn key_valid(&self) -> bool { self.cursor.key_valid() }
     #[inline(always)]
-    fn val_valid(&self, storage: &Self::Storage) -> bool { self.cursor.val_valid(storage) }
+    fn val_valid(&self) -> bool { self.cursor.val_valid() }
 
     #[inline(always)]
-    fn key<'a>(&self, storage: &'a Self::Storage) -> &'a K { self.cursor.key(storage) }
+    fn key(&self) -> &K { self.cursor.key() }
     #[inline(always)]
-    fn val<'a>(&self, storage: &'a Self::Storage) -> &'a V { self.cursor.val(storage) }
+    fn val(&self) -> &V { self.cursor.val() }
 
     #[inline(always)]
-    fn map_times<L: FnMut(&Product<T, TInner>, R)>(&mut self, storage: &Self::Storage, mut logic: L) {
+    fn map_times<L: FnMut(&Product<T, TInner>, R)>(&mut self, mut logic: L) {
+
         let stash = &mut self.time;
-        self.cursor.map_times(storage, |time, diff| {
+        self.cursor.map_times(|time, diff| {
             stash.outer = time.clone();
             logic(stash, diff)
         })
+
     }
 
     #[inline(always)]
-    fn step_key(&mut self, storage: &Self::Storage) { self.cursor.step_key(storage) }
+    fn step_key(&mut self) { self.cursor.step_key() }
     #[inline(always)]
-    fn seek_key(&mut self, storage: &Self::Storage, key: &K) { self.cursor.seek_key(storage, key) }
+    fn seek_key(&mut self, key: &K) { self.cursor.seek_key(key) }
     
     #[inline(always)]
-    fn step_val(&mut self, storage: &Self::Storage) { self.cursor.step_val(storage) }
+    fn step_val(&mut self) { self.cursor.step_val() }
     #[inline(always)]
-    fn seek_val(&mut self, storage: &Self::Storage, val: &V) { self.cursor.seek_val(storage, val) }
+    fn seek_val(&mut self, val: &V) { self.cursor.seek_val(val) }
 
     #[inline(always)]
-    fn rewind_keys(&mut self, storage: &Self::Storage) { self.cursor.rewind_keys(storage) }
+    fn rewind_keys(&mut self) { self.cursor.rewind_keys() }
     #[inline(always)]
-    fn rewind_vals(&mut self, storage: &Self::Storage) { self.cursor.rewind_vals(storage) }
+    fn rewind_vals(&mut self) { self.cursor.rewind_vals() }
 }
