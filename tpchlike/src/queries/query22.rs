@@ -1,12 +1,11 @@
-use timely::order::TotalOrder;
 use timely::dataflow::*;
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
 
 use differential_dataflow::operators::*;
+use differential_dataflow::lattice::TotalOrder;
 use differential_dataflow::difference::DiffPair;
 use differential_dataflow::operators::arrange::Arrange;
 use differential_dataflow::operators::group::GroupArranged;
-use differential_dataflow::lattice::Lattice;
 
 use differential_dataflow::trace::Trace;
 use differential_dataflow::trace::implementations::ord::OrdKeySpine as DefaultKeyTrace;
@@ -61,7 +60,7 @@ use ::Collections;
 // :n -1
 
 pub fn query<G: Scope>(collections: &mut Collections<G>) -> ProbeHandle<G::Timestamp> 
-where G::Timestamp: Lattice+TotalOrder+Ord {
+where G::Timestamp: TotalOrder+Ord {
 
     println!("TODO: Q22 uses a `group` for counting to get an arrangement; could use `count_total`");
 

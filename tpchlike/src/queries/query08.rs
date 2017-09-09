@@ -1,10 +1,9 @@
-use timely::order::TotalOrder;
 use timely::dataflow::*;
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
 
 use differential_dataflow::operators::*;
+use differential_dataflow::lattice::TotalOrder;
 use differential_dataflow::difference::DiffPair;
-use differential_dataflow::lattice::Lattice;
 
 use ::Collections;
 use ::types::create_date;
@@ -59,7 +58,7 @@ fn starts_with(source: &[u8], query: &[u8]) -> bool {
 }
 
 pub fn query<G: Scope>(collections: &mut Collections<G>) -> ProbeHandle<G::Timestamp> 
-where G::Timestamp: Lattice+TotalOrder+Ord {
+where G::Timestamp: TotalOrder+Ord {
 
     let regions = collections.regions().filter(|r| starts_with(&r.name, b"AMERICA")).map(|r| r.region_key);
     let nations1 = collections.nations().map(|n| (n.region_key, n.nation_key)).semijoin_u(&regions).map(|x| x.1);

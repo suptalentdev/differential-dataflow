@@ -1,9 +1,8 @@
-use timely::order::TotalOrder;
 use timely::dataflow::*;
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
 
 use differential_dataflow::operators::*;
-use differential_dataflow::lattice::Lattice;
+use differential_dataflow::lattice::TotalOrder;
 
 use ::Collections;
 use ::types::create_date;
@@ -26,7 +25,7 @@ use ::types::create_date;
 // :n -1
 
 pub fn query<G: Scope>(collections: &mut Collections<G>) -> ProbeHandle<G::Timestamp> 
-where G::Timestamp: Lattice+TotalOrder+Ord {
+where G::Timestamp: TotalOrder+Ord {
 
     println!("TODO: Q06 does a global aggregation with 0u8 as a key rather than ().");
 

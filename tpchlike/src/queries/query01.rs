@@ -1,10 +1,9 @@
-use timely::order::TotalOrder;
 use timely::dataflow::*;
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
 
 use differential_dataflow::operators::*;
+use differential_dataflow::lattice::TotalOrder;
 use differential_dataflow::difference::DiffPair;
-use differential_dataflow::lattice::Lattice;
 
 use ::Collections;
 
@@ -37,7 +36,7 @@ use ::Collections;
 //     l_linestatus;
 // :n -1
 
-pub fn query<G: Scope>(collections: &mut Collections<G>) -> ProbeHandle<G::Timestamp> where G::Timestamp: Lattice+TotalOrder+Ord {
+pub fn query<G: Scope>(collections: &mut Collections<G>) -> ProbeHandle<G::Timestamp> where G::Timestamp: TotalOrder+Ord {
 
     collections
         .lineitems()
