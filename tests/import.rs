@@ -11,7 +11,7 @@ use differential_dataflow::operators::arrange::{ArrangeByKey, Arrange};
 use differential_dataflow::operators::group::GroupArranged;
 use differential_dataflow::trace::implementations::ord::OrdValSpine;
 use differential_dataflow::trace::{Trace, TraceReader};
-// use differential_dataflow::hashable::{OrdWrapper, UnsignedWrapper};
+use differential_dataflow::hashable::{OrdWrapper, UnsignedWrapper};
 use itertools::Itertools;
 
 type Result = std::sync::mpsc::Receiver<timely::dataflow::operators::capture::Event<timely::progress::nested::product::Product<timely::progress::timestamp::RootTimestamp, usize>, ((u64, i64), timely::progress::nested::product::Product<timely::progress::timestamp::RootTimestamp, usize>, i64)>>;
@@ -30,8 +30,16 @@ fn run_test<T>(test: T, expected: Vec<(Product<RootTimestamp, usize>, Vec<((u64,
     let captured = (test)(input_epochs);
     let mut results = captured.extract().into_iter().flat_map(|(_, data)| data).collect::<Vec<_>>();
     results.sort_by_key(|&(_, t, _)| t);
-    let out = results.into_iter().group_by(|&(_, t, _)| t).into_iter()
-        .map(|(t, vals)| (t, vals.map(|(v, _, w)| (v, w)).collect::<Vec<_>>())).collect::<Vec<_>>();
+    let out = 
+    results
+        .into_iter()
+        .group_by(|&(_, t, _)| t)
+        .into_iter()
+        .map(|(t, vals)| { 
+            let mut vec = vals.map(|(v, _, w)| (v, w)).collect::<Vec<_>>();
+            vec.sort();
+            (t, vec)
+        }).collect::<Vec<_>>();
     // println!("out: {:?}", out);
     assert_eq!(out, expected);
 }
@@ -47,14 +55,14 @@ fn test_import() {
             let (mut input, mut trace) = worker.dataflow(|scope| {
                 let (input, edges) = scope.new_input();
                 let arranged = edges.as_collection()
-                                    .arrange_by_key();
+                                    .arrange_by_key_hashed();
                 (input, arranged.trace.clone())
             });
             let (captured,) = worker.dataflow(move |scope| {
                 let imported = trace.import(scope);
                 ::std::mem::drop(trace);
                 let captured = imported.group_arranged::<_, i64, _, _>(|_k, s, t| t.push((s.iter().map(|&(_, w)| w).sum(), 1i64)), OrdValSpine::new())
-                      .as_collection(|k: &u64, c: &i64| (k.clone(), *c))
+                      .as_collection(|k: &OrdWrapper<u64>, c: &i64| (k.item.clone(), *c))
                       .inner.exchange(|_| 0)
                       .capture();
                 (captured,)
@@ -102,7 +110,7 @@ fn test_import_completed_dataflow() {
             let (mut input, mut trace, probe) = worker.dataflow(|scope| {
                 let (input, edges) = scope.new_input();
                 let arranged = edges.as_collection()
-                                    .arrange_by_key();
+                                    .arrange_by_key_hashed();
                 (input, arranged.trace.clone(), arranged.stream.probe())
             });
 
@@ -119,18 +127,18 @@ fn test_import_completed_dataflow() {
 
             worker.step_while(|| !probe.done());
 
-            let (probe2, captured,) = worker.dataflow(move |scope| {
+            let (_probe2, captured,) = worker.dataflow(move |scope| {
                 let imported = trace.import(scope);
                 ::std::mem::drop(trace);
                 let stream = imported.group_arranged::<_, i64, _, _>(|_k, s, t| t.push((s.iter().map(|&(_, w)| w).sum(), 1i64)), OrdValSpine::new())
-                      .as_collection(|k: &u64, c: &i64| (k.clone(), *c))
+                      .as_collection(|k: &OrdWrapper<u64>, c: &i64| (k.item.clone(), *c))
                       .inner.exchange(|_| 0);
                 let probe = stream.probe();
                 let captured = stream.capture();
                 (probe, captured,)
             });
 
-            println!("probe2: {}", probe2.with_frontier(|f| format!("{:?}", f)));
+            // println!("probe2: {}", probe2.with_frontier(|f| format!("{:?}", f)));
 
             captured
         }).unwrap().join().into_iter().map(|x| x.unwrap()).next().unwrap()
@@ -162,6 +170,7 @@ fn import_skewed() {
             let (mut input, mut trace) = worker.dataflow(|scope| {
                 let (input, edges) = scope.new_input();
                 let arranged = edges.as_collection()
+                                    .map(|(k,v)| (UnsignedWrapper::from(k), v))
                                     .arrange(OrdValSpine::new());
                 (input, arranged.trace.clone())
             });
@@ -174,7 +183,7 @@ fn import_skewed() {
             let (captured,) = worker.dataflow(move |scope| {
                 let imported = trace.import(scope);
                 let captured = imported
-                      .as_collection(|k: &u64, c: &i64| (k.clone(), *c))
+                      .as_collection(|k: &UnsignedWrapper<u64>, c: &i64| (k.item.clone(), *c))
                       .inner.exchange(|_| 0)
                       .capture();
                 (captured,)
