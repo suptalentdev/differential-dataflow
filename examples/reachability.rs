@@ -102,9 +102,9 @@ where G::Timestamp: Lattice+Ord {
         let roots = roots.enter(&inner.scope());
 
         edges
-            .semijoin(&roots)
+            .semijoin_u(&roots)
             .map(|(_s,d)| d)
             .concat(&roots)
-            .distinct()
+            .distinct_u()
      })
 }
