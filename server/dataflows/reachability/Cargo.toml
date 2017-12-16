@@ -3,9 +3,19 @@ name = "reachability"
 version = "0.1.0"
 authors = ["Frank McSherry <fmcsherry@me.com>"]
 
+[dependencies.timely]
+git="https://github.com/frankmcsherry/timely-dataflow/"
+
+[dependencies.differential-dataflow]
+path="../../../"
+
+[dependencies.dd_server]
+path="../../"
+
 [dependencies]
-differential-dataflow = { path = "../../../" }
-dd_server = { path = "../../" }
+rand="0.3.13"
+libloading="*"
+timely_communication="*"
 
 [lib]
 crate-type = ["dylib"]
