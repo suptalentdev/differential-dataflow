@@ -11,10 +11,8 @@
 //! element of the second lattice, if neither first element equals
 //! the join.
 
-
-
 /// A pair of timestamps, partially ordered by the product order.
-#[derive(Debug, Hash, Default, Clone, Eq, PartialEq, Ord, PartialOrd, Abomonation, Serialize, Deserialize)]
+#[derive(Debug, Hash, Default, Clone, Eq, PartialEq, Ord, PartialOrd, Abomonation)]
 pub struct AltNeu<T> {
     pub time: T,
     pub neu: bool,  // alt < neu in timestamp comparisons.
