@@ -8,8 +8,7 @@
 
 use timely::dataflow::Scope;
 
-use ::{Collection, Data, Hashable};
-use ::difference::Monoid;
+use ::{Collection, Data, Diff, Hashable};
 use operators::arrange::ArrangeBySelf;
 
 /// An extension method for consolidating weighted streams.
@@ -46,7 +45,7 @@ pub trait Consolidate<D: Data+Hashable> {
 impl<G: Scope, D, R> Consolidate<D> for Collection<G, D, R>
 where
     D: Data+Hashable,
-    R: Monoid,
+    R: Diff,
     G::Timestamp: ::lattice::Lattice+Ord,
  {
     fn consolidate(&self) -> Self {
@@ -91,7 +90,7 @@ pub trait ConsolidateStream<D: Data+Hashable> {
 impl<G: Scope, D, R> ConsolidateStream<D> for Collection<G, D, R>
 where
     D: Data+Hashable,
-    R: Monoid,
+    R: Diff,
     G::Timestamp: ::lattice::Lattice+Ord,
  {
     fn consolidate_stream(&self) -> Self {
