@@ -4,7 +4,7 @@
 //! operators have specialized implementations to make them work efficiently, and are in addition
 //! to several operations defined directly on the `Collection` type (e.g. `map` and `filter`).
 
-pub use self::reduce::{Reduce, Threshold, Count, consolidate_from};
+pub use self::group::{Group, Threshold, Count, consolidate_from};
 pub use self::consolidate::Consolidate;
 pub use self::iterate::Iterate;
 pub use self::join::{Join, JoinCore};
@@ -12,12 +12,13 @@ pub use self::count::CountTotal;
 pub use self::threshold::ThresholdTotal;
 
 pub mod arrange;
-pub mod reduce;
+pub mod group;
 pub mod consolidate;
 pub mod iterate;
 pub mod join;
 pub mod count;
 pub mod threshold;
+// pub mod min;
 
 use ::difference::Monoid;
 use lattice::Lattice;
@@ -43,7 +44,7 @@ impl<'a, V:'a, T, R> EditList<'a, V, T, R> where T: Ord+Clone, R: Monoid {
     where K: Eq, V: Clone, C: Cursor<K, V, T, R>, L: Fn(&T)->T {
         self.clear();
         while cursor.val_valid(storage) {
-            cursor.map_times(storage, |time1, diff1| self.push(logic(time1), diff1));
+            cursor.map_times(storage, |time1, diff1| self.push(logic(time1), diff1.clone()));
             self.seal(cursor.val(storage));
             cursor.step_val(storage);
         }

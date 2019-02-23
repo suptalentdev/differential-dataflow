@@ -1,9 +1,17 @@
-//! Applies a reduction function on records grouped by key.
+//! Group records by a key, and apply a reduction function.
 //!
-//! The `reduce` operator acts on `(key, val)` data.
-//! Records with the same key are grouped together, and a user-supplied reduction function is applied
-//! to the key and the list of values.
-//! The function is expected to populate a list of output values.
+//! The `group` operators act on data that can be viewed as pairs `(key, val)`. They group records
+//! with the same key, and apply user supplied functions to the key and a list of values, which are
+//! expected to populate a list of output values.
+//!
+//! Several variants of `group` exist which allow more precise control over how grouping is done.
+//! For example, the `_by` suffixed variants take arbitrary data, but require a key-value selector
+//! to be applied to each record. The `_u` suffixed variants use unsigned integers as keys, and
+//! will use a dense array rather than a `HashMap` to store their keys.
+//!
+//! The list of values are presented as an iterator which internally merges sorted lists of values.
+//! This ordering can be exploited in several cases to avoid computation when only the first few
+//! elements are required.
 
 use hashable::Hashable;
 use ::{Data, Collection};
@@ -25,20 +33,9 @@ use trace::implementations::ord::OrdKeySpine as DefaultKeyTrace;
 
 use trace::TraceReader;
 
-/// Extension trait for the `reduce` differential dataflow method.
-pub trait Reduce<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: Lattice+Ord {
-    /// Applies a reduction function on records grouped by key.
-    ///
-    /// Input data must be structured as `(key, val)` pairs.
-    /// The user-supplied reduction function takes as arguments
-    ///
-    ///     1. a reference to the key,
-    ///     2. a reference to the slice of values and their accumulated updates,
-    ///     3. a mutuable reference to a vector to populate with output values and accumulated updates.
-    ///
-    /// The user logic is only invoked for non-empty input collections, and it is safe to assume that the
-    /// slice of input values is non-empty. The values are presented in sorted order, as defined by their
-    /// `Ord` implementations.
+/// Extension trait for the `group` differential dataflow method.
+pub trait Group<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: Lattice+Ord {
+    /// Groups records by their first field, and applies reduction logic to the associated values.
     ///
     /// # Examples
     ///
@@ -47,24 +44,24 @@ pub trait Reduce<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: Latt
     /// extern crate differential_dataflow;
     ///
     /// use differential_dataflow::input::Input;
-    /// use differential_dataflow::operators::Reduce;
+    /// use differential_dataflow::operators::Group;
     ///
     /// fn main() {
     ///     ::timely::example(|scope| {
-    ///         // report the smallest value for each group
+    ///         // report the first value for each group
     ///         scope.new_collection_from(1 .. 10).1
     ///              .map(|x| (x / 3, x))
-    ///              .reduce(|_key, input, output| {
-    ///                  output.push((*input[0].0, 1))
+    ///              .group(|_key, src, dst| {
+    ///                  dst.push((*src[0].0, 1))
     ///              });
     ///     });
     /// }
     /// ```
-    fn reduce<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
+    fn group<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
     where L: Fn(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static;
 }
 
-impl<G, K, V, R> Reduce<G, K, V, R> for Collection<G, (K, V), R>
+impl<G, K, V, R> Group<G, K, V, R> for Collection<G, (K, V), R>
     where
         G: Scope,
         G::Timestamp: Lattice+Ord,
@@ -72,28 +69,28 @@ impl<G, K, V, R> Reduce<G, K, V, R> for Collection<G, (K, V), R>
         V: Data,
         R: Monoid,
  {
-    fn reduce<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
+    fn group<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
         where L: Fn(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static {
         self.arrange_by_key()
-            .reduce_abelian::<_,_,DefaultValTrace<_,_,_,_>,_>(logic)
+            .group_arranged::<_,_,DefaultValTrace<_,_,_,_>,_>(logic)
             .as_collection(|k,v| (k.clone(), v.clone()))
     }
 }
 
-impl<G: Scope, K: Data, V: Data, T1, R: Monoid> Reduce<G, K, V, R> for Arranged<G, K, V, R, T1>
+impl<G: Scope, K: Data, V: Data, T1, R: Monoid> Group<G, K, V, R> for Arranged<G, K, V, R, T1>
 where
     G::Timestamp: Lattice+Ord,
     T1: TraceReader<K, V, G::Timestamp, R>+Clone+'static,
     T1::Batch: BatchReader<K, V, G::Timestamp, R>
 {
-    fn reduce<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
+    fn group<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
         where L: Fn(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static {
-        self.reduce_abelian::<_,_,DefaultValTrace<_,_,_,_>,_>(logic)
+        self.group_arranged::<_,_,DefaultValTrace<_,_,_,_>,_>(logic)
             .as_collection(|k,v| (k.clone(), v.clone()))
     }
 }
 
-/// Extension trait for the `threshold` and `distinct` differential dataflow methods.
+/// Extension trait for the `distinct` differential dataflow method.
 pub trait Threshold<G: Scope, K: Data, R1: Monoid> where G::Timestamp: Lattice+Ord {
     /// Transforms the multiplicity of records.
     ///
@@ -119,7 +116,7 @@ pub trait Threshold<G: Scope, K: Data, R1: Monoid> where G::Timestamp: Lattice+O
     ///     });
     /// }
     /// ```
-    fn threshold<R2: Abelian, F: Fn(&K, R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2>;
+    fn threshold<R2: Abelian, F: Fn(&K, &R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2>;
     /// Reduces the collection to one occurrence of each distinct element.
     ///
     /// # Examples
@@ -147,9 +144,9 @@ pub trait Threshold<G: Scope, K: Data, R1: Monoid> where G::Timestamp: Lattice+O
 
 impl<G: Scope, K: Data+Hashable, R1: Monoid> Threshold<G, K, R1> for Collection<G, K, R1>
 where G::Timestamp: Lattice+Ord {
-    fn threshold<R2: Abelian, F: Fn(&K,R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2> {
+    fn threshold<R2: Abelian, F: Fn(&K,&R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2> {
         self.arrange_by_self()
-            .reduce_abelian::<_,_,DefaultKeyTrace<_,_,_>,_>(move |k,s,t| t.push(((), thresh(k, s[0].1.clone()))))
+            .group_arranged::<_,_,DefaultKeyTrace<_,_,_>,_>(move |k,s,t| t.push(((), thresh(k, &s[0].1))))
             .as_collection(|k,_| k.clone())
     }
 }
@@ -159,8 +156,8 @@ where
     G::Timestamp: Lattice+Ord,
     T1: TraceReader<K, (), G::Timestamp, R1>+Clone+'static,
     T1::Batch: BatchReader<K, (), G::Timestamp, R1> {
-    fn threshold<R2: Abelian, F: Fn(&K,R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2> {
-        self.reduce_abelian::<_,_,DefaultKeyTrace<_,_,_>,_>(move |k,s,t| t.push(((), thresh(k, s[0].1.clone()))))
+    fn threshold<R2: Abelian, F: Fn(&K,&R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2> {
+        self.group_arranged::<_,_,DefaultKeyTrace<_,_,_>,_>(move |k,s,t| t.push(((), thresh(k, &s[0].1))))
             .as_collection(|k,_| k.clone())
     }
 }
@@ -196,7 +193,7 @@ where
 {
     fn count(&self) -> Collection<G, (K, R), isize> {
         self.arrange_by_self()
-            .reduce_abelian::<_,_,DefaultValTrace<_,_,_,_>,_>(|_k,s,t| t.push((s[0].1.clone(), 1)))
+            .group_arranged::<_,_,DefaultValTrace<_,_,_,_>,_>(|_k,s,t| t.push((s[0].1.clone(), 1)))
             .as_collection(|k,c| (k.clone(), c.clone()))
     }
 }
@@ -208,13 +205,13 @@ where
     T1::Batch: BatchReader<K, (), G::Timestamp, R>
 {
     fn count(&self) -> Collection<G, (K, R), isize> {
-        self.reduce_abelian::<_,_,DefaultValTrace<_,_,_,_>,_>(|_k,s,t| t.push((s[0].1.clone(), 1)))
+        self.group_arranged::<_,_,DefaultValTrace<_,_,_,_>,_>(|_k,s,t| t.push((s[0].1.clone(), 1)))
             .as_collection(|k,c| (k.clone(), c.clone()))
     }
 }
 
 /// Extension trait for the `group_arranged` differential dataflow method.
-pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: Lattice+Ord {
+pub trait GroupArranged<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: Lattice+Ord {
     /// Applies `group` to arranged data, and returns an arrangement of output data.
     ///
     /// This method is used by the more ergonomic `group`, `distinct`, and `count` methods, although
@@ -227,7 +224,7 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: 
     /// extern crate differential_dataflow;
     ///
     /// use differential_dataflow::input::Input;
-    /// use differential_dataflow::operators::group::ReduceCore;
+    /// use differential_dataflow::operators::group::GroupArranged;
     /// use differential_dataflow::trace::Trace;
     /// use differential_dataflow::trace::implementations::ord::OrdValSpine;
     /// use differential_dataflow::hashable::OrdWrapper;
@@ -239,14 +236,14 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: 
     ///         let trace =
     ///         scope.new_collection_from(1 .. 10u32).1
     ///              .map(|x| (x, x))
-    ///              .reduce_abelian::<_,_,OrdValSpine<_,_,_,_>,_>(
+    ///              .group_arranged::<_,_,OrdValSpine<_,_,_,_>,_>(
     ///                  move |_key, src, dst| dst.push((*src[0].0, 1))
     ///              )
     ///              .trace;
     ///     });
     /// }
     /// ```
-    fn reduce_abelian<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
+    fn group_arranged<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
         where
             V2: Data,
             R2: Abelian,
@@ -254,7 +251,7 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: 
             T2::Batch: Batch<K, V2, G::Timestamp, R2>,
             L: Fn(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static,
         {
-            self.reduce_core(move |key, input, output, change| {
+            self.group_solve(move |key, input, output, change| {
                 if !input.is_empty() {
                     logic(key, input, change);
                 }
@@ -268,7 +265,7 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: 
     /// Unlike `group_arranged`, this method may be called with an empty `input`,
     /// and it may not be safe to index into the first element.
     /// At least one of the two collections will be non-empty.
-    fn reduce_core<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
+    fn group_solve<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
         where
             V2: Data,
             R2: Monoid,
@@ -278,7 +275,7 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: 
             ;
 }
 
-impl<G, K, V, R> ReduceCore<G, K, V, R> for Collection<G, (K, V), R>
+impl<G, K, V, R> GroupArranged<G, K, V, R> for Collection<G, (K, V), R>
 where
     G: Scope,
     G::Timestamp: Lattice+Ord,
@@ -286,7 +283,7 @@ where
     V: Data,
     R: Monoid,
 {
-    fn reduce_core<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
+    fn group_solve<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
         where
             V2: Data,
             R2: Monoid,
@@ -295,17 +292,17 @@ where
             L: Fn(&K, &[(&V, R)], &mut Vec<(V2,R2)>, &mut Vec<(V2, R2)>)+'static
     {
         self.arrange_by_key()
-            .reduce_core(logic)
+            .group_solve(logic)
     }
 }
 
-impl<G: Scope, K: Data, V: Data, T1, R: Monoid> ReduceCore<G, K, V, R> for Arranged<G, K, V, R, T1>
+impl<G: Scope, K: Data, V: Data, T1, R: Monoid> GroupArranged<G, K, V, R> for Arranged<G, K, V, R, T1>
 where
     G::Timestamp: Lattice+Ord,
     T1: TraceReader<K, V, G::Timestamp, R>+Clone+'static,
     T1::Batch: BatchReader<K, V, G::Timestamp, R> {
 
-    fn reduce_core<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
+    fn group_solve<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
         where
             V2: Data,
             R2: Monoid,
@@ -319,7 +316,7 @@ where
         let stream = {
 
             let result_trace = &mut result_trace;
-            self.stream.unary_frontier(Pipeline, "Reduce", move |_capability, operator_info| {
+            self.stream.unary_frontier(Pipeline, "Group", move |_capability, operator_info| {
 
                 let logger = {
                     let scope = self.stream.scope();
@@ -362,7 +359,7 @@ where
 
                 move |input, output| {
 
-                    // The `reduce` operator receives fully formed batches, which each serve as an indication
+                    // The `group` operator receives fully formed batches, which each serve as an indication
                     // that the frontier has advanced to the upper bound of their description.
                     //
                     // Although we could act on each individually, several may have been sent, and it makes
@@ -611,7 +608,7 @@ fn consolidate<T: Ord, R: Monoid>(list: &mut Vec<(T, R)>) {
     for index in 1 .. list.len() {
         if list[index].0 == list[index-1].0 {
             let prev = ::std::mem::replace(&mut list[index-1].1, R::zero());
-            list[index].1 += prev;
+            list[index].1 += &prev;
         }
     }
     list.retain(|x| !x.1.is_zero());
@@ -628,7 +625,7 @@ pub fn consolidate_from<T: Ord+Clone, R: Monoid>(vec: &mut Vec<(T, R)>, off: usi
     for index in (off + 1) .. vec.len() {
         if vec[index].0 == vec[index - 1].0 {
             let prev = ::std::mem::replace(&mut vec[index-1].1, R::zero());
-            vec[index].1 += prev;
+            vec[index].1 += &prev;
         }
     }
 
