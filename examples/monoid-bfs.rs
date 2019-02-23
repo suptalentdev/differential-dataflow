@@ -31,8 +31,8 @@ pub struct MinSum {
 use std::ops::{AddAssign, Mul};
 use differential_dataflow::difference::Monoid;
 
-impl<'a> AddAssign<&'a Self> for MinSum {
-    fn add_assign(&mut self, rhs: &'a Self) {
+impl AddAssign<Self> for MinSum {
+    fn add_assign(&mut self, rhs: Self) {
         self.value = std::cmp::min(self.value, rhs.value);
     }
 }
