@@ -29,7 +29,7 @@ use timely::dataflow::operators::generic::{Operator, source};
 use timely::dataflow::channels::pact::{Pipeline, Exchange};
 use timely::progress::Timestamp;
 use timely::progress::frontier::Antichain;
-use timely::dataflow::operators::{Capability, CapabilitySet};
+use timely::dataflow::operators::Capability;
 
 use timely_sort::Unsigned;
 
@@ -212,10 +212,8 @@ where T: Timestamp+Lattice, Tr: TraceReader<K,V,T,R> {
 }
 
 impl<K, V, T, R, Tr> TraceAgent<K, V, T, R, Tr>
-where
-    T: Lattice+Ord+Clone+'static,
-    Tr: TraceReader<K,V,T,R>
-{
+where T: Lattice+Ord+Clone+'static, Tr: TraceReader<K,V,T,R> {
+
     /// Copies an existing collection into the supplied scope.
     ///
     /// This method creates an `Arranged` collection that should appear indistinguishable from applying `arrange`
@@ -275,72 +273,59 @@ where
     /// }
     /// ```
     pub fn import<G: Scope<Timestamp=T>>(&mut self, scope: &G) -> Arranged<G, K, V, R, TraceAgent<K, V, T, R, Tr>>
-    where
-        T: Timestamp
+    where T: Timestamp
     {
         self.import_named(scope, "ArrangedSource")
     }
 
     /// Same as `import`, but allows to name the source.
     pub fn import_named<G: Scope<Timestamp=T>>(&mut self, scope: &G, name: &str) -> Arranged<G, K, V, R, TraceAgent<K, V, T, R, Tr>>
-    where
-        T: Timestamp
+    where T: Timestamp
     {
-        // Drop ShutdownButton and return only the arrangement.
-        self.import_core(scope, name).0
-    }
-    /// Same as `import`, but allows to name the source.
-    pub fn import_core<G: Scope<Timestamp=T>>(&mut self, scope: &G, name: &str) -> (Arranged<G, K, V, R, TraceAgent<K, V, T, R, Tr>>, ShutdownButton<CapabilitySet<T>>)
-    where
-        T: Timestamp
-    {
-        let trace = self.clone();
 
-        // Capabilities shared with a shutdown button.
-        let capabilities = Rc::new(RefCell::new(Some(CapabilitySet::new())));
-        let shutdown_button = ShutdownButton::new(capabilities.clone());
+        let trace = self.clone();
 
         let stream = source(scope, name, move |capability, info| {
 
             let activator = scope.activator_for(&info.address[..]);
             let queue = self.new_listener(activator);
 
-            capabilities.borrow_mut().as_mut().unwrap().insert(capability);
+            // capabilities the source maintains.
+            let mut capabilities = vec![capability];
 
             move |output| {
 
-                let mut capabilities = capabilities.borrow_mut();
-                if let Some(ref mut capabilities) = *capabilities {
+                let mut borrow = queue.1.borrow_mut();
+                while let Some((frontier, sent)) = borrow.pop_front() {
 
-                    let mut borrow = queue.1.borrow_mut();
-                    for (frontier, sent) in borrow.drain(..) {
+                    // if data are associated, send em!
+                    if let Some((time, batch)) = sent {
+                        let delayed =
+                        capabilities
+                            .iter()
+                            .find(|c| c.time().less_equal(&time))
+                            .expect("failed to find capability")
+                            .delayed(&time);
 
-                        if let Some((time, batch)) = sent {
-                            let delayed = capabilities.delayed(&time);
-                            output.session(&delayed).give(batch);
-                        }
-
-                        capabilities.downgrade(&frontier[..]);
+                        output.session(&delayed).give(batch);
                     }
+
+                    // advance capabilities to look like `frontier`.
+                    let mut new_capabilities = Vec::new();
+                    for time in frontier.iter() {
+                        if let Some(cap) = capabilities.iter().find(|c| c.time().less_equal(&time)) {
+                            new_capabilities.push(cap.delayed(&time));
+                        }
+                        else {
+                            panic!("failed to find capability for {:?} in {:?}", time, capabilities);
+                        }
+                    }
+                    capabilities = new_capabilities;
                 }
             }
         });
 
-        (Arranged { stream, trace }, shutdown_button)
-    }
-}
-
-/// Wrapper than can drop shared references.
-pub struct ShutdownButton<T> {
-    reference: Rc<RefCell<Option<T>>>,
-}
-
-impl<T> ShutdownButton<T> {
-    /// Creates a new ShutdownButton.
-    pub fn new(reference: Rc<RefCell<Option<T>>>) -> Self { Self { reference } }
-    /// Push the shutdown button, dropping the shared objects.
-    pub fn push(&mut self) {
-        *self.reference.borrow_mut() = None;
+        Arranged { stream, trace }
     }
 }
 
