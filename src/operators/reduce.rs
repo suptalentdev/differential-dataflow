@@ -75,20 +75,21 @@ impl<G, K, V, R> Reduce<G, K, V, R> for Collection<G, (K, V), R>
     fn reduce<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
         where L: Fn(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static {
         self.arrange_by_key()
-            .reduce_abelian::<_,_,DefaultValTrace<_,_,_,_>,_>(logic)
+            .reduce_abelian::<_,DefaultValTrace<_,_,_,_>>(logic)
             .as_collection(|k,v| (k.clone(), v.clone()))
     }
 }
 
-impl<G: Scope, K: Data, V: Data, T1, R: Monoid> Reduce<G, K, V, R> for Arranged<G, K, V, R, T1>
+impl<G: Scope, K: Data, V: Data, T1, R: Monoid> Reduce<G, K, V, R> for Arranged<G, T1>
 where
     G::Timestamp: Lattice+Ord,
-    T1: TraceReader<K, V, G::Timestamp, R>+Clone+'static,
-    T1::Batch: BatchReader<K, V, G::Timestamp, R>
+    T1: TraceReader<Key=K, Val=V, Time=G::Timestamp, R=R>+Clone+'static,
+    T1::Batch: BatchReader<K, V, G::Timestamp, R>,
+    T1::Cursor: Cursor<K, V, G::Timestamp, R>,
 {
     fn reduce<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
         where L: Fn(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static {
-        self.reduce_abelian::<_,_,DefaultValTrace<_,_,_,_>,_>(logic)
+        self.reduce_abelian::<_,DefaultValTrace<_,_,_,_>>(logic)
             .as_collection(|k,v| (k.clone(), v.clone()))
     }
 }
@@ -149,18 +150,20 @@ impl<G: Scope, K: Data+Hashable, R1: Monoid> Threshold<G, K, R1> for Collection<
 where G::Timestamp: Lattice+Ord {
     fn threshold<R2: Abelian, F: Fn(&K,&R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2> {
         self.arrange_by_self()
-            .reduce_abelian::<_,_,DefaultKeyTrace<_,_,_>,_>(move |k,s,t| t.push(((), thresh(k, &s[0].1))))
+            .reduce_abelian::<_,DefaultKeyTrace<_,_,_>>(move |k,s,t| t.push(((), thresh(k, &s[0].1))))
             .as_collection(|k,_| k.clone())
     }
 }
 
-impl<G: Scope, K: Data, T1, R1: Monoid> Threshold<G, K, R1> for Arranged<G, K, (), R1, T1>
+impl<G: Scope, K: Data, T1, R1: Monoid> Threshold<G, K, R1> for Arranged<G, T1>
 where
     G::Timestamp: Lattice+Ord,
-    T1: TraceReader<K, (), G::Timestamp, R1>+Clone+'static,
-    T1::Batch: BatchReader<K, (), G::Timestamp, R1> {
+    T1: TraceReader<Key=K, Val=(), Time=G::Timestamp, R=R1>+Clone+'static,
+    T1::Batch: BatchReader<K, (), G::Timestamp, R1>,
+    T1::Cursor: Cursor<K, (), G::Timestamp, R1>,
+{
     fn threshold<R2: Abelian, F: Fn(&K,&R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2> {
-        self.reduce_abelian::<_,_,DefaultKeyTrace<_,_,_>,_>(move |k,s,t| t.push(((), thresh(k, &s[0].1))))
+        self.reduce_abelian::<_,DefaultKeyTrace<_,_,_>>(move |k,s,t| t.push(((), thresh(k, &s[0].1))))
             .as_collection(|k,_| k.clone())
     }
 }
@@ -196,19 +199,20 @@ where
 {
     fn count(&self) -> Collection<G, (K, R), isize> {
         self.arrange_by_self()
-            .reduce_abelian::<_,_,DefaultValTrace<_,_,_,_>,_>(|_k,s,t| t.push((s[0].1.clone(), 1)))
+            .reduce_abelian::<_,DefaultValTrace<_,_,_,_>>(|_k,s,t| t.push((s[0].1.clone(), 1)))
             .as_collection(|k,c| (k.clone(), c.clone()))
     }
 }
 
-impl<G: Scope, K: Data, T1, R: Monoid> Count<G, K, R> for Arranged<G, K, (), R, T1>
+impl<G: Scope, K: Data, T1, R: Monoid> Count<G, K, R> for Arranged<G, T1>
 where
     G::Timestamp: Lattice+Ord,
-    T1: TraceReader<K, (), G::Timestamp, R>+Clone+'static,
-    T1::Batch: BatchReader<K, (), G::Timestamp, R>
+    T1: TraceReader<Key=K, Val=(), Time=G::Timestamp, R=R>+Clone+'static,
+    T1::Batch: BatchReader<K, (), G::Timestamp, R>,
+    T1::Cursor: Cursor<K, (), G::Timestamp, R>,
 {
     fn count(&self) -> Collection<G, (K, R), isize> {
-        self.reduce_abelian::<_,_,DefaultValTrace<_,_,_,_>,_>(|_k,s,t| t.push((s[0].1.clone(), 1)))
+        self.reduce_abelian::<_,DefaultValTrace<_,_,_,_>>(|_k,s,t| t.push((s[0].1.clone(), 1)))
             .as_collection(|k,c| (k.clone(), c.clone()))
     }
 }
@@ -238,22 +242,23 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: 
     ///         let trace =
     ///         scope.new_collection_from(1 .. 10u32).1
     ///              .map(|x| (x, x))
-    ///              .reduce_abelian::<_,_,OrdValSpine<_,_,_,_>,_>(
+    ///              .reduce_abelian::<_,OrdValSpine<_,_,_,_>>(
     ///                  move |_key, src, dst| dst.push((*src[0].0, 1))
     ///              )
     ///              .trace;
     ///     });
     /// }
     /// ```
-    fn reduce_abelian<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
+    fn reduce_abelian<L, T2>(&self, logic: L) -> Arranged<G, TraceAgent<T2>>
         where
-            V2: Data,
-            R2: Abelian,
-            T2: Trace<K, V2, G::Timestamp, R2>+'static,
-            T2::Batch: Batch<K, V2, G::Timestamp, R2>,
-            L: Fn(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static,
+            T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
+            T2::Val: Data,
+            T2::R: Abelian,
+            T2::Batch: Batch<K, T2::Val, G::Timestamp, T2::R>,
+            T2::Cursor: Cursor<K, T2::Val, G::Timestamp, T2::R>,
+            L: Fn(&K, &[(&V, R)], &mut Vec<(T2::Val, T2::R)>)+'static,
         {
-            self.reduce_core(move |key, input, output, change| {
+            self.reduce_core::<_,T2>(move |key, input, output, change| {
                 if !input.is_empty() {
                     logic(key, input, change);
                 }
@@ -267,13 +272,14 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: 
     /// Unlike `reduce_arranged`, this method may be called with an empty `input`,
     /// and it may not be safe to index into the first element.
     /// At least one of the two collections will be non-empty.
-    fn reduce_core<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
+    fn reduce_core<L, T2>(&self, logic: L) -> Arranged<G, TraceAgent<T2>>
         where
-            V2: Data,
-            R2: Monoid,
-            T2: Trace<K, V2, G::Timestamp, R2>+'static,
-            T2::Batch: Batch<K, V2, G::Timestamp, R2>,
-            L: Fn(&K, &[(&V, R)], &mut Vec<(V2,R2)>, &mut Vec<(V2, R2)>)+'static
+            T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
+            T2::Val: Data,
+            T2::R: Monoid,
+            T2::Batch: Batch<K, T2::Val, G::Timestamp, T2::R>,
+            T2::Cursor: Cursor<K, T2::Val, G::Timestamp, T2::R>,
+            L: Fn(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val,T2::R)>)+'static
             ;
 }
 
@@ -285,32 +291,35 @@ where
     V: Data,
     R: Monoid,
 {
-    fn reduce_core<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
+    fn reduce_core<L, T2>(&self, logic: L) -> Arranged<G, TraceAgent<T2>>
         where
-            V2: Data,
-            R2: Monoid,
-            T2: Trace<K, V2, G::Timestamp, R2>+'static,
-            T2::Batch: Batch<K, V2, G::Timestamp, R2>,
-            L: Fn(&K, &[(&V, R)], &mut Vec<(V2,R2)>, &mut Vec<(V2, R2)>)+'static
+            T2::Val: Data,
+            T2::R: Monoid,
+            T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
+            T2::Batch: Batch<K, T2::Val, G::Timestamp, T2::R>,
+            T2::Cursor: Cursor<K, T2::Val, G::Timestamp, T2::R>,
+            L: Fn(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static
     {
         self.arrange_by_key()
             .reduce_core(logic)
     }
 }
 
-impl<G: Scope, K: Data, V: Data, T1, R: Monoid> ReduceCore<G, K, V, R> for Arranged<G, K, V, R, T1>
+impl<G: Scope, K: Data, V: Data, T1, R: Monoid> ReduceCore<G, K, V, R> for Arranged<G, T1>
 where
     G::Timestamp: Lattice+Ord,
-    T1: TraceReader<K, V, G::Timestamp, R>+Clone+'static,
-    T1::Batch: BatchReader<K, V, G::Timestamp, R> {
-
-    fn reduce_core<L, V2, T2, R2>(&self, logic: L) -> Arranged<G, K, V2, R2, TraceAgent<K, V2, G::Timestamp, R2, T2>>
+    T1: TraceReader<Key=K, Val=V, Time=G::Timestamp, R=R>+Clone+'static,
+    T1::Batch: BatchReader<K, V, G::Timestamp, R>,
+    T1::Cursor: Cursor<K, V, G::Timestamp, R>,
+{
+    fn reduce_core<L, T2>(&self, logic: L) -> Arranged<G, TraceAgent<T2>>
         where
-            V2: Data,
-            R2: Monoid,
-            T2: Trace<K, V2, G::Timestamp, R2>+'static,
-            T2::Batch: Batch<K, V2, G::Timestamp, R2>,
-            L: Fn(&K, &[(&V, R)], &mut Vec<(V2,R2)>, &mut Vec<(V2, R2)>)+'static {
+            T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
+            T2::Val: Data,
+            T2::R: Monoid,
+            T2::Batch: Batch<K, T2::Val, G::Timestamp, T2::R>,
+            T2::Cursor: Cursor<K, T2::Val, G::Timestamp, T2::R>,
+            L: Fn(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static {
 
         let mut result_trace = None;
 
@@ -450,11 +459,11 @@ where
                         //
                         // TODO: It would be better if all updates went into one batch, but timely dataflow prevents
                         //       this as long as it requires that there is only one capability for each message.
-                        let mut buffers = Vec::<(G::Timestamp, Vec<(V2, G::Timestamp, R2)>)>::new();
+                        let mut buffers = Vec::<(G::Timestamp, Vec<(T2::Val, G::Timestamp, T2::R)>)>::new();
                         let mut builders = Vec::new();
                         for i in 0 .. capabilities.len() {
                             buffers.push((capabilities[i].time().clone(), Vec::new()));
-                            builders.push(<T2::Batch as Batch<K,V2,G::Timestamp,R2>>::Builder::new());
+                            builders.push(<T2::Batch as Batch<K,T2::Val,G::Timestamp,T2::R>>::Builder::new());
                         }
 
                         // cursors for navigating input and output traces.
@@ -465,7 +474,7 @@ where
                         let (mut batch_cursor, batch_storage) = (CursorList::new(batch_cursors, &batch_storage), batch_storage);
                         let batch_storage = &batch_storage;
 
-                        let mut thinker = history_replay::HistoryReplayer::<V, V2, G::Timestamp, R, R2>::new();
+                        let mut thinker = history_replay::HistoryReplayer::<V, T2::Val, G::Timestamp, R, T2::R>::new();
 
                         // We now march through the keys we must work on, drawing from `batch_cursors` and `exposed`.
                         //
@@ -771,17 +780,39 @@ mod history_replay {
             }
 
             // Determine the meet of times in `batch` and `times`.
-            let mut meet = T::maximum();
-            if self.meets.len() > 0 { meet = meet.meet(&self.meets[0]); }
-            if let Some(time) = batch_replay.meet() { meet = meet.meet(&time); }
+            let mut meet = None;
+            update_meet(&mut meet, self.meets.get(0));
+            update_meet(&mut meet, batch_replay.meet());
+            // if let Some(time) = self.meets.get(0) {
+            //     meet = match meet {
+            //         None => Some(self.meets[0].clone()),
+            //         Some(x) => Some(x.meet(&self.meets[0])),
+            //     };
+            // }
+            // if let Some(time) = batch_replay.meet() {
+            //     meet = match meet {
+            //         None => Some(time.clone()),
+            //         Some(x) => Some(x.meet(&time)),
+            //     };
+            // }
 
             // Having determined the meet, we can load the input and output histories, where we
             // advance all times by joining them with `meet`. The resulting times are more compact
             // and guaranteed to accumulate identically for times greater or equal to `meet`.
 
             // Load the input and output histories.
-            let mut input_replay = self.input_history.replay_key(source_cursor, source_storage, key, |time| time.join(&meet));
-            let mut output_replay = self.output_history.replay_key(output_cursor, output_storage, key, |time| time.join(&meet));
+            let mut input_replay = if let Some(meet) = meet.as_ref() {
+                self.input_history.replay_key(source_cursor, source_storage, key, |time| time.join(&meet))
+            }
+            else {
+                self.input_history.replay_key(source_cursor, source_storage, key, |time| time.clone())
+            };
+            let mut output_replay = if let Some(meet) = meet.as_ref() {
+                self.output_history.replay_key(output_cursor, output_storage, key, |time| time.join(&meet))
+            }
+            else {
+                self.output_history.replay_key(output_cursor, output_storage, key, |time| time.clone())
+            };
 
             self.synth_times.clear();
             self.times_current.clear();
@@ -818,7 +849,11 @@ mod history_replay {
 
                 // Advance batch history, and capture whether an update exists at `next_time`.
                 let mut interesting = batch_replay.step_while_time_is(&next_time);
-                if interesting { batch_replay.advance_buffer_by(&meet); }
+                if interesting {
+                    if let Some(meet) = meet.as_ref() {
+                        batch_replay.advance_buffer_by(&meet);
+                    }
+                }
 
                 // advance both `synth_times` and `times_slice`, marking this time interesting if in either.
                 while self.synth_times.last() == Some(&next_time) {
@@ -859,7 +894,7 @@ mod history_replay {
 
                         // Assemble the input collection at `next_time`. (`self.input_buffer` cleared just after use).
                         debug_assert!(self.input_buffer.is_empty());
-                        input_replay.advance_buffer_by(&meet);
+                        meet.as_ref().map(|meet| input_replay.advance_buffer_by(&meet));
                         for &((value, ref time), ref diff) in input_replay.buffer().iter() {
                             if time.less_equal(&next_time) {
                                 self.input_buffer.push((value, diff.clone()));
@@ -878,7 +913,7 @@ mod history_replay {
                         }
                         consolidate(&mut self.input_buffer);
 
-                        output_replay.advance_buffer_by(&meet);
+                        meet.as_ref().map(|meet| output_replay.advance_buffer_by(&meet));
                         for &((ref value, ref time), ref diff) in output_replay.buffer().iter() {
                             if time.less_equal(&next_time) {
                                 self.output_buffer.push(((*value).clone(), diff.clone()));
@@ -949,8 +984,10 @@ mod history_replay {
                             // NOTE: We only do this when we add records; it could be that there are situations
                             //       where we want to consolidate even without changes (because an initially
                             //       large collection can now be collapsed).
-                            for entry in &mut self.output_produced {
-                                (entry.0).1 = (entry.0).1.join(&meet);
+                            if let Some(meet) = meet.as_ref() {
+                                for entry in &mut self.output_produced {
+                                    (entry.0).1 = (entry.0).1.join(&meet);
+                                }
                             }
                             consolidate(&mut self.output_produced);
                         }
@@ -1010,16 +1047,23 @@ mod history_replay {
                 }
 
                 // Update `meet` to track the meet of each source of times.
-                meet = T::maximum();
-                if let Some(time) = batch_replay.meet() { meet = meet.meet(time); }
-                if let Some(time) = input_replay.meet() { meet = meet.meet(time); }
-                if let Some(time) = output_replay.meet() { meet = meet.meet(time); }
-                for time in self.synth_times.iter() { meet = meet.meet(time); }
-                if let Some(time) = meets_slice.first() { meet = meet.meet(time); }
+                meet = None;//T::maximum();
+                update_meet(&mut meet, batch_replay.meet());
+                update_meet(&mut meet, input_replay.meet());
+                update_meet(&mut meet, output_replay.meet());
+                for time in self.synth_times.iter() { update_meet(&mut meet, Some(time)); }
+                // if let Some(time) = batch_replay.meet() { meet = meet.meet(time); }
+                // if let Some(time) = input_replay.meet() { meet = meet.meet(time); }
+                // if let Some(time) = output_replay.meet() { meet = meet.meet(time); }
+                // for time in self.synth_times.iter() { meet = meet.meet(time); }
+                update_meet(&mut meet, meets_slice.first());
+                // if let Some(time) = meets_slice.first() { meet = meet.meet(time); }
 
                 // Update `times_current` by the frontier.
-                for time in self.times_current.iter_mut() {
-                    *time = time.join(&meet);
+                if let Some(meet) = meet.as_ref() {
+                    for time in self.times_current.iter_mut() {
+                        *time = time.join(&meet);
+                    }
                 }
 
                 sort_dedup(&mut self.times_current);
@@ -1031,4 +1075,18 @@ mod history_replay {
             (compute_counter, output_counter)
         }
     }
+
+    /// Updates an optional meet by an optional time.
+    fn update_meet<T: Lattice+Clone>(meet: &mut Option<T>, other: Option<&T>) {
+        if let Some(time) = other {
+            if let Some(meet) = meet.as_mut() {
+                *meet = meet.meet(time);
+            }
+            if meet.is_none() {
+                *meet = Some(time.clone());
+            }
+        }
+    }
 }
+
+
