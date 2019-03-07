@@ -10,22 +10,21 @@ use trace::{TraceReader, BatchReader, Description};
 use trace::cursor::Cursor;
 
 /// Wrapper to provide trace to nested scope.
-pub struct TraceEnter<Tr, TInner, F>
-where
-    Tr: TraceReader,
-{
+pub struct TraceEnter<K, V, T, R, Tr, TInner, F> {
+    phantom: ::std::marker::PhantomData<(K, V, R)>,
     trace: Tr,
-    stash1: Vec<Tr::Time>,
+    stash1: Vec<T>,
     stash2: Vec<TInner>,
     logic: Rc<F>,
 }
 
-impl<Tr,TInner,F> Clone for TraceEnter<Tr, TInner,F>
+impl<K,V,T,R,Tr,TInner,F> Clone for TraceEnter<K, V, T, R, Tr, TInner,F>
 where
-    Tr: TraceReader+Clone,
+    Tr: TraceReader<K, V, T, R>+Clone,
 {
     fn clone(&self) -> Self {
         TraceEnter {
+            phantom: ::std::marker::PhantomData,
             trace: self.trace.clone(),
             stash1: Vec::new(),
             stash2: Vec::new(),
@@ -34,25 +33,21 @@ where
     }
 }
 
-impl<Tr, TInner,F> TraceReader for TraceEnter<Tr, TInner,F>
+impl<K, V, T, R, Tr, TInner,F> TraceReader<K, V, TInner, R> for TraceEnter<K, V, T, R, Tr, TInner,F>
 where
-    Tr: TraceReader,
+    Tr: TraceReader<K, V, T, R>,
     Tr::Batch: Clone,
-    Tr::Key: 'static,
-    Tr::Val: 'static,
-    Tr::Time: Timestamp,
-    TInner: Refines<Tr::Time>+Lattice,
-    Tr::R: 'static,
+    K: 'static,
+    V: 'static,
+    T: Timestamp,
+    TInner: Refines<T>+Lattice,
+    R: 'static,
     F: 'static,
-    F: Fn(&Tr::Key, &Tr::Val, &Tr::Time)->TInner,
+    F: Fn(&K, &V, &T)->TInner,
 {
-    type Key = Tr::Key;
-    type Val = Tr::Val;
-    type Time = TInner;
-    type R = Tr::R;
 
-    type Batch = BatchEnter<Tr::Key, Tr::Val, Tr::Time, Tr::R, Tr::Batch, TInner,F>;
-    type Cursor = CursorEnter<Tr::Key, Tr::Val, Tr::Time, Tr::R, Tr::Cursor, TInner,F>;
+    type Batch = BatchEnter<K, V, T, R, Tr::Batch, TInner,F>;
+    type Cursor = CursorEnter<K, V, T, R, Tr::Cursor, TInner,F>;
 
     fn map_batches<F2: FnMut(&Self::Batch)>(&mut self, mut f: F2) {
         let logic = self.logic.clone();
@@ -91,7 +86,7 @@ where
         &self.stash2[..]
     }
 
-    fn cursor_through(&mut self, upper: &[TInner]) -> Option<(Self::Cursor, <Self::Cursor as Cursor<Tr::Key, Tr::Val, TInner, Tr::R>>::Storage)> {
+    fn cursor_through(&mut self, upper: &[TInner]) -> Option<(Self::Cursor, <Self::Cursor as Cursor<K, V, TInner, R>>::Storage)> {
         self.stash1.clear();
         for time in upper.iter() {
             self.stash1.push(time.clone().to_outer());
@@ -100,15 +95,16 @@ where
     }
 }
 
-impl<Tr, TInner, F> TraceEnter<Tr, TInner,F>
+impl<K, V, T, R, Tr, TInner,F> TraceEnter<K, V, T, R, Tr, TInner,F>
 where
-    Tr: TraceReader,
-    Tr::Time: Timestamp,
-    TInner: Refines<Tr::Time>+Lattice,
+    Tr: TraceReader<K, V, T, R>,
+    T: Timestamp,
+    TInner: Refines<T>+Lattice,
 {
     /// Makes a new trace wrapper
     pub fn make_from(trace: Tr, logic: Rc<F>) -> Self {
         TraceEnter {
+            phantom: ::std::marker::PhantomData,
             trace: trace,
             stash1: Vec::new(),
             stash2: Vec::new(),

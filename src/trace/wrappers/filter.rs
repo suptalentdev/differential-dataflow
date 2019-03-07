@@ -8,40 +8,37 @@ use trace::{TraceReader, BatchReader, Description};
 use trace::cursor::Cursor;
 
 /// Wrapper to provide trace to nested scope.
-pub struct TraceFilter<Tr, F> {
+pub struct TraceFilter<K, V, T, R, Tr, F> {
+    phantom: ::std::marker::PhantomData<(K, V, T, R)>,
     trace: Tr,
     logic: Rc<F>,
 }
 
-impl<Tr,F> Clone for TraceFilter<Tr, F>
+impl<K,V,T,R,Tr,F> Clone for TraceFilter<K, V, T, R, Tr, F>
 where
-    Tr: TraceReader+Clone,
+    Tr: TraceReader<K, V, T, R>+Clone,
 {
     fn clone(&self) -> Self {
         TraceFilter {
+            phantom: ::std::marker::PhantomData,
             trace: self.trace.clone(),
             logic: self.logic.clone(),
         }
     }
 }
 
-impl<Tr, F> TraceReader for TraceFilter<Tr, F>
+impl<K, V, T, R, Tr, F> TraceReader<K, V, T, R> for TraceFilter<K, V, T, R, Tr, F>
 where
-    Tr: TraceReader,
+    Tr: TraceReader<K, V, T, R>,
     Tr::Batch: Clone,
-    Tr::Key: 'static,
-    Tr::Val: 'static,
-    Tr::Time: Timestamp,
-    Tr::R: 'static,
-    F: Fn(&Tr::Key, &Tr::Val)->bool+'static,
+    K: 'static,
+    V: 'static,
+    T: Timestamp,
+    R: 'static,
+    F: Fn(&K, &V)->bool+'static,
 {
-    type Key = Tr::Key;
-    type Val = Tr::Val;
-    type Time = Tr::Time;
-    type R = Tr::R;
-
-    type Batch = BatchFilter<Tr::Key, Tr::Val, Tr::Time, Tr::R, Tr::Batch, F>;
-    type Cursor = CursorFilter<Tr::Key, Tr::Val, Tr::Time, Tr::R, Tr::Cursor, F>;
+    type Batch = BatchFilter<K, V, T, R, Tr::Batch, F>;
+    type Cursor = CursorFilter<K, V, T, R, Tr::Cursor, F>;
 
     fn map_batches<F2: FnMut(&Self::Batch)>(&mut self, mut f: F2) {
         let logic = self.logic.clone();
@@ -49,25 +46,26 @@ where
             .map_batches(|batch| f(&Self::Batch::make_from(batch.clone(), logic.clone())))
     }
 
-    fn advance_by(&mut self, frontier: &[Tr::Time]) { self.trace.advance_by(frontier) }
-    fn advance_frontier(&mut self) -> &[Tr::Time] { self.trace.advance_frontier() }
+    fn advance_by(&mut self, frontier: &[T]) { self.trace.advance_by(frontier) }
+    fn advance_frontier(&mut self) -> &[T] { self.trace.advance_frontier() }
 
-    fn distinguish_since(&mut self, frontier: &[Tr::Time]) { self.trace.distinguish_since(frontier) }
-    fn distinguish_frontier(&mut self) -> &[Tr::Time] { self.trace.distinguish_frontier() }
+    fn distinguish_since(&mut self, frontier: &[T]) { self.trace.distinguish_since(frontier) }
+    fn distinguish_frontier(&mut self) -> &[T] { self.trace.distinguish_frontier() }
 
-    fn cursor_through(&mut self, upper: &[Tr::Time]) -> Option<(Self::Cursor, <Self::Cursor as Cursor<Tr::Key, Tr::Val, Tr::Time, Tr::R>>::Storage)> {
+    fn cursor_through(&mut self, upper: &[T]) -> Option<(Self::Cursor, <Self::Cursor as Cursor<K, V, T, R>>::Storage)> {
         self.trace.cursor_through(upper).map(|(x,y)| (CursorFilter::new(x, self.logic.clone()), y))
     }
 }
 
-impl<Tr, F> TraceFilter<Tr, F>
+impl<K, V, T, R, Tr, F> TraceFilter<K, V, T, R, Tr, F>
 where
-    Tr: TraceReader,
-    Tr::Time: Timestamp,
+    Tr: TraceReader<K, V, T, R>,
+    T: Timestamp,
 {
     /// Makes a new trace wrapper
     pub fn make_from(trace: Tr, logic: Rc<F>) -> Self {
         TraceFilter {
+            phantom: ::std::marker::PhantomData,
             trace,
             logic,
         }

@@ -32,16 +32,14 @@ use trace::cursor::Cursor;
 /// This method is experimental, and should be used with care. The intent is that the function
 /// `func` can be used to restrict and lock in updates at a particular time, as suggested in the
 /// module-level documentation.
-pub fn freeze<G, T, F>(arranged: &Arranged<G, T>, func: F) -> Arranged<G, TraceFreeze<T, F>>
+pub fn freeze<G, K, V, R, T, F>(arranged: &Arranged<G, K, V, R, T>, func: F) -> Arranged<G, K, V, R, TraceFreeze<K, V, G::Timestamp, R, T, F>>
 where
     G: Scope,
     G::Timestamp: Lattice+Ord,
-    T: TraceReader<Time=G::Timestamp>+Clone,
-    T::Key: 'static,
-    T::Val: 'static,
-    T::R: 'static,
-    T::Batch: BatchReader<T::Key, T::Val, G::Timestamp, T::R>,
-    T::Cursor: Cursor<T::Key, T::Val, G::Timestamp, T::R>,
+    K: 'static,
+    V: 'static,
+    R: 'static,
+    T: TraceReader<K, V, G::Timestamp, R>+Clone,
     F: Fn(&G::Timestamp)->Option<G::Timestamp>+'static,
 {
     let func1 = Rc::new(func);
@@ -53,47 +51,44 @@ where
 }
 
 /// Wrapper to provide trace to nested scope.
-pub struct TraceFreeze<Tr, F>
+pub struct TraceFreeze<K, V, T, R, Tr, F>
 where
-    Tr: TraceReader,
-    Tr::Time: Lattice+Clone+'static,
-    F: Fn(&Tr::Time)->Option<Tr::Time>,
+    T: Lattice+Clone+'static,
+    Tr: TraceReader<K, V, T, R>,
+    F: Fn(&T)->Option<T>,
 {
+    phantom: ::std::marker::PhantomData<(K, V, R, T)>,
     trace: Tr,
     func: Rc<F>,
 }
 
-impl<Tr,F> Clone for TraceFreeze<Tr, F>
+impl<K,V,T,R,Tr,F> Clone for TraceFreeze<K, V, T, R, Tr, F>
 where
-    Tr: TraceReader+Clone,
-    Tr::Time: Lattice+Clone+'static,
-    F: Fn(&Tr::Time)->Option<Tr::Time>,
+    T: Lattice+Clone+'static,
+    Tr: TraceReader<K, V, T, R>+Clone,
+    F: Fn(&T)->Option<T>,
 {
     fn clone(&self) -> Self {
         TraceFreeze {
+            phantom: ::std::marker::PhantomData,
             trace: self.trace.clone(),
             func: self.func.clone(),
         }
     }
 }
 
-impl<Tr, F> TraceReader for TraceFreeze<Tr, F>
+impl<K, V, T, R, Tr, F> TraceReader<K, V, T, R> for TraceFreeze<K, V, T, R, Tr, F>
 where
-    Tr: TraceReader,
+    Tr: TraceReader<K, V, T, R>,
     Tr::Batch: Clone,
-    Tr::Key: 'static,
-    Tr::Val: 'static,
-    Tr::Time: Lattice+Clone+Default+'static,
-    Tr::R: 'static,
-    F: Fn(&Tr::Time)->Option<Tr::Time>+'static,
+    K: 'static,
+    V: 'static,
+    T: Lattice+Clone+Default+'static,
+    R: 'static,
+    F: Fn(&T)->Option<T>+'static,
 {
-    type Key = Tr::Key;
-    type Val = Tr::Val;
-    type Time = Tr::Time;
-    type R = Tr::R;
-
-    type Batch = BatchFreeze<Tr::Key, Tr::Val, Tr::Time, Tr::R, Tr::Batch, F>;
-    type Cursor = CursorFreeze<Tr::Key, Tr::Val, Tr::Time, Tr::R, Tr::Cursor, F>;
+    type Batch = BatchFreeze<K, V, T, R, Tr::Batch, F>;
+    type Cursor = CursorFreeze<K, V, T, R, Tr::Cursor, F>;
 
     fn map_batches<F2: FnMut(&Self::Batch)>(&mut self, mut f: F2) {
         let func = &self.func;
@@ -102,32 +97,33 @@ where
         })
     }
 
-    fn advance_by(&mut self, frontier: &[Tr::Time]) { self.trace.advance_by(frontier) }
-    fn advance_frontier(&mut self) -> &[Tr::Time] { self.trace.advance_frontier() }
+    fn advance_by(&mut self, frontier: &[T]) { self.trace.advance_by(frontier) }
+    fn advance_frontier(&mut self) -> &[T] { self.trace.advance_frontier() }
 
-    fn distinguish_since(&mut self, frontier: &[Tr::Time]) { self.trace.distinguish_since(frontier) }
-    fn distinguish_frontier(&mut self) -> &[Tr::Time] { self.trace.distinguish_frontier() }
+    fn distinguish_since(&mut self, frontier: &[T]) { self.trace.distinguish_since(frontier) }
+    fn distinguish_frontier(&mut self) -> &[T] { self.trace.distinguish_frontier() }
 
-    fn cursor_through(&mut self, upper: &[Tr::Time]) -> Option<(Self::Cursor, <Self::Cursor as Cursor<Tr::Key, Tr::Val, Tr::Time, Tr::R>>::Storage)> {
+    fn cursor_through(&mut self, upper: &[T]) -> Option<(Self::Cursor, <Self::Cursor as Cursor<K, V, T, R>>::Storage)> {
         let func = &self.func;
         self.trace.cursor_through(upper)
             .map(|(cursor, storage)| (CursorFreeze::new(cursor, func.clone()), storage))
     }
 }
 
-impl<Tr, F> TraceFreeze<Tr, F>
+impl<K, V, T, R, Tr, F> TraceFreeze<K, V, T, R, Tr, F>
 where
-    Tr: TraceReader,
+    Tr: TraceReader<K, V, T, R>,
     Tr::Batch: Clone,
-    Tr::Key: 'static,
-    Tr::Val: 'static,
-    Tr::Time: Lattice+Clone+Default+'static,
-    Tr::R: 'static,
-    F: Fn(&Tr::Time)->Option<Tr::Time>,
+    K: 'static,
+    V: 'static,
+    T: Lattice+Clone+Default+'static,
+    R: 'static,
+    F: Fn(&T)->Option<T>,
 {
     /// Makes a new trace wrapper
     pub fn make_from(trace: Tr, func: Rc<F>) -> Self {
         TraceFreeze {
+            phantom: ::std::marker::PhantomData,
             trace: trace,
             func: func,
         }
