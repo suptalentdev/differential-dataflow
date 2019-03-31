@@ -6,7 +6,6 @@ use rand::{Rng, SeedableRng, StdRng};
 
 use timely::dataflow::operators::*;
 use timely::order::Product;
-use timely::scheduling::Scheduler;
 
 use differential_dataflow::input::Input;
 use differential_dataflow::AsCollection;
@@ -39,9 +38,7 @@ fn main() {
     	let mut graph = worker.dataflow::<Product<(),usize>,_,_>(|scope| {
 
             // create a source operator which will produce random edges and delete them.
-            timely::dataflow::operators::generic::source(scope, "RandomGraph", |mut capability, info| {
-
-                let activator = scope.activator_for(&info.address[..]);
+            timely::dataflow::operators::generic::source(scope, "RandomGraph", |mut capability, _info| {
 
                 let seed: &[_] = &[1, 2, 3, index];
                 let mut rng1: StdRng = SeedableRng::from_seed(seed);    // rng for edge additions
@@ -90,7 +87,6 @@ fn main() {
                         // println!("downgrading {:?} to {:?}", capability, time);
                         capability.downgrade(&time);
                     }
-                    activator.activate();
                 }
             })
             .probe_with(&mut probe)
