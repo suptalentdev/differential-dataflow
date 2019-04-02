@@ -4,7 +4,7 @@ use std::hash::Hash;
 
 use timely::dataflow::*;
 
-use ::{Collection, ExchangeData};
+use ::{Collection, Data};
 use ::lattice::Lattice;
 use ::operators::*;
 use hashable::Hashable;
@@ -13,7 +13,7 @@ fn _color<G, N>(edges: &Collection<G, (N,N)>) -> Collection<G,(N,Option<u32>)>
 where
     G: Scope,
     G::Timestamp: Lattice+Ord,
-    N: ExchangeData+Hash,
+    N: Data+Hash,
 {
     // need some bogus initial values.
     let start = edges.map(|(x,_y)| (x,u32::max_value()))
@@ -48,8 +48,8 @@ pub fn sequence<G, N, V, F>(
 where
     G: Scope,
     G::Timestamp: Lattice+Hash+Ord,
-    N: ExchangeData+Hashable,
-    V: ExchangeData,
+    N: Data+Hashable,
+    V: Data,
     F: Fn(&N, &[(&V, isize)])->V+'static
 {
 

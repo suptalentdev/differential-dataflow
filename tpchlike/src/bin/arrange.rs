@@ -3,7 +3,6 @@ extern crate differential_dataflow;
 extern crate core_affinity;
 extern crate tpchlike;
 
-use std::rc::Rc;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::Instant;
@@ -41,11 +40,9 @@ fn main() {
             let (regs_in, regs) = scope.new_input();
             let (supp_in, supp) = scope.new_input();
 
-            // let line = line.map(|(x,y,z): (LineItem, usize, isize)| (x,y+1,-z)).concat(&line);
-
             let collections = Collections::new(
                 cust.as_collection(),
-                line.map(|(d,t,r)| (Rc::new(d),t,r)).as_collection(),
+                line.as_collection(),
                 nats.as_collection(),
                 ords.as_collection(),
                 part.as_collection(),
