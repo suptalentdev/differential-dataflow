@@ -20,7 +20,7 @@ Let's write this computation starting from a collection `edges`, using different
             inner.join(&edges)
                  .map(|(_src,lbl,dst)| (dst,lbl))
                  .concat(&labels)
-                 .reduce(|_dst, lbls, out| {
+                 .group(|_dst, lbls, out| {
                      let min_lbl =
                      lbls.iter()
                          .map(|x| *x.0)
