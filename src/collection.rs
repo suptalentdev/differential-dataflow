@@ -442,8 +442,7 @@ impl<G: Scope, D: Data, R: Monoid> Collection<G, D, R> where G::Timestamp: Data 
     /// }
     /// ```
     pub fn assert_empty(&self)
-    where D: ::ExchangeData+Hashable,
-          R: ::ExchangeData+Hashable,
+    where D: ::Data+Hashable,
           G::Timestamp: Lattice+Ord,
     {
         use operators::consolidate::Consolidate;
@@ -562,8 +561,7 @@ impl<G: Scope, D: Data, R: Abelian> Collection<G, D, R> where G::Timestamp: Data
     /// }
     /// ```
     pub fn assert_eq(&self, other: &Self)
-    where D: ::ExchangeData+Hashable,
-          R: ::ExchangeData+Hashable,
+    where D: ::Data+Hashable,
           G::Timestamp: Lattice+Ord
     {
         self.negate()
