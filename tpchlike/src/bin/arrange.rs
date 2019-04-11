@@ -3,6 +3,7 @@ extern crate differential_dataflow;
 extern crate core_affinity;
 extern crate tpchlike;
 
+use std::rc::Rc;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::Instant;
@@ -27,12 +28,13 @@ fn main() {
         let physical_batch = ::std::env::args().nth(3).unwrap().parse::<usize>().unwrap();
         let arrange: bool = ::std::env::args().nth(4).unwrap().parse().unwrap();
         let seal: bool = ::std::env::args().any(|x| x == "seal-inputs");
+        let window: bool = ::std::env::args().any(|x| x == "window");
 
         let (mut inputs, probe, used, mut traces) = worker.dataflow::<usize,_,_>(move |scope| {
 
             // create new inputs to use in workers!
             let (cust_in, cust) = scope.new_input();
-            let (line_in, line) = scope.new_input();
+            let (line_in, mut line) = scope.new_input();
             let (nats_in, nats) = scope.new_input();
             let (ords_in, ords) = scope.new_input();
             let (part_in, part) = scope.new_input();
@@ -40,9 +42,13 @@ fn main() {
             let (regs_in, regs) = scope.new_input();
             let (supp_in, supp) = scope.new_input();
 
+            if window {
+                line = line.map(|(x,y,z): (LineItem, usize, isize)| (x,y+1,-z)).concat(&line);
+            }
+
             let collections = Collections::new(
                 cust.as_collection(),
-                line.as_collection(),
+                line.map(|(d,t,r)| (Rc::new(d),t,r)).as_collection(),
                 nats.as_collection(),
                 ords.as_collection(),
                 part.as_collection(),
