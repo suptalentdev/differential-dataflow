@@ -5,7 +5,7 @@ use std::hash::Hash;
 use timely::order::Product;
 use timely::dataflow::*;
 
-use ::{Collection, ExchangeData};
+use ::{Collection, Data};
 use ::operators::*;
 use ::lattice::Lattice;
 use ::operators::iterate::Variable;
@@ -24,7 +24,7 @@ pub fn bidijkstra<G, N>(edges: &Collection<G, (N,N)>, goals: &Collection<G, (N,N
 where
     G: Scope,
     G::Timestamp: Lattice+Ord,
-    N: ExchangeData+Hash,
+    N: Data+Hash,
 {
     edges.scope().iterative::<u64,_,_>(|inner| {
 

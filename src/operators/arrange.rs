@@ -33,7 +33,7 @@ use timely::dataflow::operators::{Capability, CapabilitySet};
 
 use timely_sort::Unsigned;
 
-use ::{Data, ExchangeData, Collection, AsCollection, Hashable};
+use ::{Data, Collection, AsCollection, Hashable};
 use ::difference::Monoid;
 use lattice::Lattice;
 use trace::{Trace, TraceReader, Batch, BatchReader, Batcher, Cursor};
@@ -664,9 +664,9 @@ where
     pub fn lookup(&self, queries: &Stream<G, (Tr::Key, G::Timestamp)>) -> Stream<G, (Tr::Key, Tr::Val, G::Timestamp, Tr::R)>
     where
         G::Timestamp: Data+Lattice+Ord+TotalOrder,
-        Tr::Key: ExchangeData+Hashable,
-        Tr::Val: ExchangeData,
-        Tr::R: ExchangeData+Monoid,
+        Tr::Key: Data+Hashable,
+        Tr::Val: Data,
+        Tr::R: Monoid,
         Tr: 'static,
     {
         // while the arrangement is already correctly distributed, the query stream may not be.
@@ -835,9 +835,7 @@ where
     /// is the correct way to determine that times in the shared trace are committed.
     fn arrange<Tr>(&self) -> Arranged<G, TraceAgent<Tr>>
     where
-        K: ExchangeData+Hashable,
-        V: ExchangeData,
-        R: ExchangeData,
+        K: Hashable,
         Tr: Trace+TraceReader<Key=K,Val=V,Time=G::Timestamp,R=R>+'static,
         Tr::Batch: Batch<K, V, G::Timestamp, R>,
         Tr::Cursor: Cursor<K, V, G::Timestamp, R>,
@@ -852,9 +850,7 @@ where
     /// is the correct way to determine that times in the shared trace are committed.
     fn arrange_named<Tr>(&self, name: &str) -> Arranged<G, TraceAgent<Tr>>
     where
-        K: ExchangeData+Hashable,
-        V: ExchangeData,
-        R: ExchangeData,
+        K: Hashable,
         Tr: Trace+TraceReader<Key=K,Val=V,Time=G::Timestamp,R=R>+'static,
         Tr::Batch: Batch<K, V, G::Timestamp, R>,
         Tr::Cursor: Cursor<K, V, G::Timestamp, R>,
@@ -877,10 +873,10 @@ where
     ;
 }
 
-impl<G: Scope, K: ExchangeData+Hashable, V: ExchangeData, R: Monoid+ExchangeData> Arrange<G, K, V, R> for Collection<G, (K, V), R>
+impl<G: Scope, K: Data+Hashable, V: Data, R: Monoid> Arrange<G, K, V, R> for Collection<G, (K, V), R>
 where
     G::Timestamp: Lattice+Ord,
-{
+{    
     fn arrange_core<P, Tr>(&self, pact: P, name: &str) -> Arranged<G, TraceAgent<Tr>>
     where
         P: ParallelizationContract<G::Timestamp, ((K,V),G::Timestamp,R)>,
@@ -993,7 +989,7 @@ where
     }
 }
 
-impl<G: Scope, K: ExchangeData+Hashable, R: ExchangeData+Monoid> Arrange<G, K, (), R> for Collection<G, K, R>
+impl<G: Scope, K: Data+Hashable, R: Monoid> Arrange<G, K, (), R> for Collection<G, K, R>
 where
     G::Timestamp: Lattice+Ord,
 {
@@ -1037,7 +1033,7 @@ where G::Timestamp: Lattice+Ord {
     fn arrange_by_key(&self) -> Arranged<G, TraceAgent<DefaultValTrace<K, V, G::Timestamp, R>>>;
 }
 
-impl<G: Scope, K: ExchangeData+Hashable, V: ExchangeData, R: ExchangeData+Monoid> ArrangeByKey<G, K, V, R> for Collection<G, (K,V), R>
+impl<G: Scope, K: Data+Hashable, V: Data, R: Monoid> ArrangeByKey<G, K, V, R> for Collection<G, (K,V), R>
 where
     G::Timestamp: Lattice+Ord
 {
@@ -1064,7 +1060,7 @@ where
 }
 
 
-impl<G: Scope, K: ExchangeData+Hashable, R: ExchangeData+Monoid> ArrangeBySelf<G, K, R> for Collection<G, K, R>
+impl<G: Scope, K: Data+Hashable, R: Monoid> ArrangeBySelf<G, K, R> for Collection<G, K, R>
 where
     G::Timestamp: Lattice+Ord
 {

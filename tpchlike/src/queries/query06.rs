@@ -5,7 +5,7 @@ use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use differential_dataflow::operators::*;
 use differential_dataflow::lattice::Lattice;
 
-use {Arrangements, Experiment, Collections};
+use {Collections, Context};
 use ::types::create_date;
 
 // -- $ID$
@@ -42,16 +42,12 @@ where G::Timestamp: Lattice+TotalOrder+Ord {
 }
 
 pub fn query_arranged<G: Scope<Timestamp=usize>>(
-    scope: &mut G,
-    probe: &mut ProbeHandle<usize>,
-    experiment: &mut Experiment,
-    _arrangements: &mut Arrangements,
+    context: &mut Context<G>,
 )
-where
-    G::Timestamp: Lattice+TotalOrder+Ord
 {
-    experiment
-        .lineitem(scope)
+    context
+        .collections
+        .lineitems()
         .explode(|x| {
             if (create_date(1994, 1, 1) <= x.ship_date) && (x.ship_date < create_date(1995, 1, 1)) && (5 <= x.discount) && (x.discount <= 7) && (x.quantity < 24) {
                 Some(((), (x.extended_price * x.discount / 100) as isize))
@@ -59,5 +55,6 @@ where
             else { None }
         })
         .count_total()
-        .probe_with(probe);
+        // .inspect(|x| println!("{:?}", x))
+        .probe_with(&mut context.probe);
 }

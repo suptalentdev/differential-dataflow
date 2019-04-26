@@ -5,7 +5,7 @@ use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use differential_dataflow::operators::*;
 use differential_dataflow::lattice::Lattice;
 
-use {Arrangements, Experiment, Collections};
+use {Collections, Context};
 
 // -- $ID$
 // -- TPC-H/TPC-R Order Priority Checking Query (Q4)
@@ -61,21 +61,17 @@ where G::Timestamp: Lattice+TotalOrder+Ord {
 }
 
 pub fn query_arranged<G: Scope<Timestamp=usize>>(
-    scope: &mut G,
-    probe: &mut ProbeHandle<usize>,
-    experiment: &mut Experiment,
-    arrangements: &mut Arrangements,
+    context: &mut Context<G>,
 )
-where
-    G::Timestamp: Lattice+TotalOrder+Ord
 {
-    let arrangements = arrangements.in_scope(scope, experiment);
+    let orders = context.orders();
 
-    experiment
-        .lineitem(scope)
+    context
+        .collections
+        .lineitems()
         .flat_map(|l| if l.commit_date < l.receipt_date { Some((l.order_key, ())) } else { None })
         .distinct_total()
-        .join_core(&arrangements.order, |_k,&(),o| {
+        .join_core(&orders, |_k,&(),o| {
             if o.order_date >= ::types::create_date(1993, 7, 1) && o.order_date < ::types::create_date(1993, 10, 1) {
                 Some(o.order_priority)
             }
@@ -84,5 +80,5 @@ where
             }
         })
         .count_total()
-        .probe_with(probe);
+        .probe_with(&mut context.probe);
 }

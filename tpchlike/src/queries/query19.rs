@@ -6,7 +6,7 @@ use differential_dataflow::operators::*;
 use differential_dataflow::operators::arrange::ArrangeBySelf;
 use differential_dataflow::lattice::Lattice;
 
-use {Arrangements, Experiment, Collections};
+use {Collections, Context};
 
 // -- $ID$
 // -- TPC-H/TPC-R Discounted Revenue Query (Q19)
@@ -92,25 +92,21 @@ where G::Timestamp: Lattice+TotalOrder+Ord {
 }
 
 pub fn query_arranged<G: Scope<Timestamp=usize>>(
-    scope: &mut G,
-    probe: &mut ProbeHandle<usize>,
-    experiment: &mut Experiment,
-    arrangements: &mut Arrangements,
+    context: &mut Context<G>,
 )
-where
-    G::Timestamp: Lattice+TotalOrder+Ord
 {
-    let arrangements = arrangements.in_scope(scope, experiment);
+    let part = context.parts();
 
-    experiment
-        .lineitem(scope)
+    context
+        .collections
+        .lineitems()
         .explode(|x|
             if (starts_with(&x.ship_mode, b"AIR") || starts_with(&x.ship_mode, b"AIR REG")) && starts_with(&x.ship_instruct, b"DELIVER IN PERSON") {
                 Some(((x.part_key, x.quantity), (x.extended_price * (100 - x.discount) / 100) as isize))
             }
             else { None }
         )
-        .join_core(&arrangements.part, |_pk,&qu,p| {
+        .join_core(&part, |_pk,&qu,p| {
             if qu >= 1  && qu <= 11 && (starts_with(&p.brand, b"Brand#12") && 1 <= p.size && p.size <= 5  && (starts_with(&p.container, b"SM CASE") || starts_with(&p.container, b"SM BOX") || starts_with(&p.container, b"SM PACK") || starts_with(&p.container, b"MED PKG")))
             && qu >= 10 && qu <= 20 && (starts_with(&p.brand, b"Brand#23") && 1 <= p.size && p.size <= 10 && (starts_with(&p.container, b"MED BAG") || starts_with(&p.container, b"MED BOX") || starts_with(&p.container, b"MED PKG") || starts_with(&p.container, b"MED PACK")))
             && qu >= 20 && qu <= 30 && (starts_with(&p.brand, b"Brand#12") && 1 <= p.size && p.size <= 15 && (starts_with(&p.container, b"LG CASE") || starts_with(&p.container, b"LG BOX") || starts_with(&p.container, b"LG PACK") || starts_with(&p.container, b"LG PKG")))
@@ -123,5 +119,5 @@ where
 
         })
         .count_total()
-        .probe_with(probe);
+        .probe_with(&mut context.probe);
 }

@@ -5,7 +5,7 @@ use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use differential_dataflow::operators::*;
 use differential_dataflow::lattice::Lattice;
 
-use {Arrangements, Experiment, Collections};
+use {Collections, Context};
 use ::types::create_date;
 
 // -- $ID$
@@ -105,26 +105,26 @@ where G::Timestamp: Lattice+TotalOrder+Ord {
 }
 
 pub fn query_arranged<G: Scope<Timestamp=usize>>(
-    scope: &mut G,
-    probe: &mut ProbeHandle<usize>,
-    experiment: &mut Experiment,
-    arrangements: &mut Arrangements,
+    context: &mut Context<G>,
 )
-where
-    G::Timestamp: Lattice+TotalOrder+Ord
 {
-    let arrangements = arrangements.in_scope(scope, experiment);
+    let customer = context.customers();
+    let order = context.orders();
+    let supplier = context.suppliers();
+    let nation = context.nations();
 
-    experiment
-        .lineitem(scope)
+    let shipping =
+    context
+        .collections
+        .lineitems()
         .explode(|l|
             if create_date(1995, 1, 1) <= l.ship_date && l.ship_date <= create_date(1996, 12, 31) {
                 Some(((l.supp_key, (l.order_key, l.ship_date >> 16)), (l.extended_price * (100 - l.discount)) as isize / 100))
             }
             else { None }
         )
-        .join_core(&arrangements.supplier, |_sk,&(ok,sd),s| Some((s.nation_key,(ok,sd))))
-        .join_core(&arrangements.nation, |_nk,&(ok,sd),n| {
+        .join_core(&supplier, |_sk,&(ok,sd),s| Some((s.nation_key,(ok,sd))))
+        .join_core(&nation, |_nk,&(ok,sd),n| {
             if starts_with(&n.name, b"FRANCE") || starts_with(&n.name, b"GERMANY") {
                 Some((ok,(sd,n.name)))
             }
@@ -132,9 +132,9 @@ where
                 None
             }
         })
-        .join_core(&arrangements.order, |_ok,&(sd,n1),o| Some((o.cust_key,(sd,n1))))
-        .join_core(&arrangements.customer, |_ck,&(sd,n1),c| Some((c.nation_key,(sd,n1))))
-        .join_core(&arrangements.nation, |_nk,&(sd,n1),n| {
+        .join_core(&order, |_ok,&(sd,n1),o| Some((o.cust_key,(sd,n1))))
+        .join_core(&customer, |_ck,&(sd,n1),c| Some((c.nation_key,(sd,n1))))
+        .join_core(&nation, |_nk,&(sd,n1),n| {
             if starts_with(&n.name, b"FRANCE") || starts_with(&n.name, b"GERMANY") {
                 Some((sd,n1,n.name))
             }
@@ -142,7 +142,9 @@ where
                 None
             }
         })
-        .filter(|&(_sd,n1,n2)| n1 != n2)
+        .filter(|&(_sd,n1,n2)| n1 != n2);
+
+    shipping
         .count_total()
-        .probe_with(probe);
+        .probe_with(&mut context.probe);
 }

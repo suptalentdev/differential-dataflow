@@ -5,7 +5,7 @@ use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use differential_dataflow::operators::*;
 use differential_dataflow::lattice::Lattice;
 
-use {Arrangements, Experiment, Collections};
+use {Collections, Context};
 
 // -- $ID$
 // -- TPC-H/TPC-R Small-Quantity-Order Revenue Query (Q17)
@@ -66,20 +66,16 @@ where G::Timestamp: Lattice+TotalOrder+Ord {
 }
 
 pub fn query_arranged<G: Scope<Timestamp=usize>>(
-    scope: &mut G,
-    probe: &mut ProbeHandle<usize>,
-    experiment: &mut Experiment,
-    arrangements: &mut Arrangements,
+    context: &mut Context<G>,
 )
-where
-    G::Timestamp: Lattice+TotalOrder+Ord
 {
-    let arrangements = arrangements.in_scope(scope, experiment);
+    let part = context.parts();
 
-    experiment
-        .lineitem(scope)
+    context
+        .collections
+        .lineitems()
         .map(|x| (x.part_key, (x.quantity, x.extended_price)))
-        .join_core(&arrangements.part, |&pk,&(qu,ep),p| {
+        .join_core(&part, |&pk,&(qu,ep),p| {
             if &p.brand[..8] == b"Brand#23" && &p.container[..7] == b"MED BOX" {
                 Some((pk,(qu,ep)))
             }
@@ -98,5 +94,5 @@ where
         })
         .explode(|(_part, price)| Some(((), price as isize)))
         .count_total()
-        .probe_with(probe);
+        .probe_with(&mut context.probe);
 }
