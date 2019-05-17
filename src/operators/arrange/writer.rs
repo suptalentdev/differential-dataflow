@@ -56,9 +56,6 @@ where
     pub fn insert(&mut self, batch: Tr::Batch, hint: Option<Tr::Time>) {
 
         // Something is wrong if not a sequence.
-        if !(&self.upper[..] == batch.lower()) {
-            println!("{:?} vs {:?}", self.upper, batch.lower());
-        }
         assert!(&self.upper[..] == batch.lower());
         assert!(batch.lower() != batch.upper());
 

@@ -505,8 +505,7 @@ where
                 let (reader_local, mut writer) = TraceAgent::new(empty_trace);
                 *reader = Some(reader_local);
 
-                // Initialize to the minimal input frontier.
-                let mut input_frontier = vec![Default::default()];
+                let mut input_frontier = Vec::new();
 
                 move |input, output| {
 
@@ -525,14 +524,8 @@ where
                     // must pretend to process the frontier advances one element at a time, batching
                     // and sending smaller bites than we might have otherwise done.
 
-                    // Assert that the frontier never regresses.
-                    assert!(input.frontier().frontier().iter().all(|t1| input_frontier.iter().any(|t2: &G::Timestamp| t2.less_equal(t1))));
-
-                    // Test to see if strict progress has occurred (any of the old frontier less equal
-                    // to the new frontier).
-                    let progress = input_frontier.iter().any(|t2| !input.frontier().less_equal(t2));
-
-                    if progress {
+                    // We should perform no work if the frontier has not advanced.
+                    if &input.frontier().frontier()[..] != &input_frontier[..] {
 
                         // There are two cases to handle with some care:
                         //
@@ -596,12 +589,12 @@ where
                         }
                         else {
                             // Announce progress updates, even without data.
+                            input_frontier.clear();
+                            input_frontier.extend(input.frontier().frontier().iter().cloned());
                             let _batch = batcher.seal(&input.frontier().frontier()[..]);
                             writer.seal(&input.frontier().frontier());
                         }
 
-                        input_frontier.clear();
-                        input_frontier.extend(input.frontier().frontier().iter().cloned());
                     }
                 }
             })
