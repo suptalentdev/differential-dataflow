@@ -75,8 +75,9 @@ fn main() {
                 // Each joined relation is directed { forward, reverse } by whether the
                 // bound variable occurs in the first or second position.
 
-                let key1 = |x: &(u32, u32)| x.0;
-                let key2 = |x: &(u32, u32)| x.1;
+                use std::rc::Rc;
+                let key1 = Rc::new(|x: &(u32, u32)| x.0);
+                let key2 = Rc::new(|x: &(u32, u32)| x.1);
 
                 use dogsdogsdogs::operators::propose;
                 use dogsdogsdogs::operators::validate;
