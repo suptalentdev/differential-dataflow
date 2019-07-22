@@ -146,14 +146,7 @@ pub trait Trace : TraceReader
 where <Self as TraceReader>::Batch: Batch<Self::Key, Self::Val, Self::Time, Self::R> {
 
 	/// Allocates a new empty trace.
-	fn new(
-		info: ::timely::dataflow::operators::generic::OperatorInfo, 
-		logging: Option<::logging::Logger>,
-		activator: Option<timely::scheduling::activate::Activator>,
-	) -> Self;
-
-	///	Exert merge effort, even without updates.
-	fn exert(&mut self, batch_size: usize, batch_index: usize);
+	fn new(info: ::timely::dataflow::operators::generic::OperatorInfo, logging: Option<::logging::Logger>) -> Self;
 
 	/// Introduces a batch of updates to the trace.
 	///
