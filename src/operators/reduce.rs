@@ -61,7 +61,7 @@ pub trait Reduce<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: Latt
     /// }
     /// ```
     fn reduce<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
-    where L: Fn(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static;
+    where L: FnMut(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static;
 }
 
 impl<G, K, V, R> Reduce<G, K, V, R> for Collection<G, (K, V), R>
@@ -73,7 +73,7 @@ impl<G, K, V, R> Reduce<G, K, V, R> for Collection<G, (K, V), R>
         R: ExchangeData+Monoid,
  {
     fn reduce<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
-        where L: Fn(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static {
+        where L: FnMut(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static {
         self.arrange_by_key()
             .reduce_abelian::<_,DefaultValTrace<_,_,_,_>>(logic)
             .as_collection(|k,v| (k.clone(), v.clone()))
@@ -88,7 +88,7 @@ where
     T1::Cursor: Cursor<K, V, G::Timestamp, R>,
 {
     fn reduce<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
-        where L: Fn(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static {
+        where L: FnMut(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static {
         self.reduce_abelian::<_,DefaultValTrace<_,_,_,_>>(logic)
             .as_collection(|k,v| (k.clone(), v.clone()))
     }
@@ -120,7 +120,7 @@ pub trait Threshold<G: Scope, K: Data, R1: Monoid> where G::Timestamp: Lattice+O
     ///     });
     /// }
     /// ```
-    fn threshold<R2: Abelian, F: Fn(&K, &R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2>;
+    fn threshold<R2: Abelian, F: FnMut(&K, &R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2>;
     /// Reduces the collection to one occurrence of each distinct element.
     ///
     /// # Examples
@@ -148,7 +148,7 @@ pub trait Threshold<G: Scope, K: Data, R1: Monoid> where G::Timestamp: Lattice+O
 
 impl<G: Scope, K: ExchangeData+Hashable, R1: ExchangeData+Monoid> Threshold<G, K, R1> for Collection<G, K, R1>
 where G::Timestamp: Lattice+Ord {
-    fn threshold<R2: Abelian, F: Fn(&K,&R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2> {
+    fn threshold<R2: Abelian, F: FnMut(&K,&R1)->R2+'static>(&self, mut thresh: F) -> Collection<G, K, R2> {
         self.arrange_by_self()
             .reduce_abelian::<_,DefaultKeyTrace<_,_,_>>(move |k,s,t| t.push(((), thresh(k, &s[0].1))))
             .as_collection(|k,_| k.clone())
@@ -162,7 +162,7 @@ where
     T1::Batch: BatchReader<K, (), G::Timestamp, R1>,
     T1::Cursor: Cursor<K, (), G::Timestamp, R1>,
 {
-    fn threshold<R2: Abelian, F: Fn(&K,&R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2> {
+    fn threshold<R2: Abelian, F: FnMut(&K,&R1)->R2+'static>(&self, mut thresh: F) -> Collection<G, K, R2> {
         self.reduce_abelian::<_,DefaultKeyTrace<_,_,_>>(move |k,s,t| t.push(((), thresh(k, &s[0].1))))
             .as_collection(|k,_| k.clone())
     }
@@ -249,21 +249,21 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: 
     ///     });
     /// }
     /// ```
-    fn reduce_abelian<L, T2>(&self, logic: L) -> Arranged<G, TraceAgent<T2>>
+    fn reduce_abelian<L, T2>(&self, mut logic: L) -> Arranged<G, TraceAgent<T2>>
         where
             T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
             T2::Val: Data,
             T2::R: Abelian,
             T2::Batch: Batch<K, T2::Val, G::Timestamp, T2::R>,
             T2::Cursor: Cursor<K, T2::Val, G::Timestamp, T2::R>,
-            L: Fn(&K, &[(&V, R)], &mut Vec<(T2::Val, T2::R)>)+'static,
+            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val, T2::R)>)+'static,
         {
             self.reduce_core::<_,T2>(move |key, input, output, change| {
                 if !input.is_empty() {
                     logic(key, input, change);
                 }
                 change.extend(output.drain(..).map(|(x,d)| (x,-d)));
-                consolidate(change);
+                crate::consolidation::consolidate(change);
             })
         }
 
@@ -279,7 +279,7 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Monoid> where G::Timestamp: 
             T2::R: Monoid,
             T2::Batch: Batch<K, T2::Val, G::Timestamp, T2::R>,
             T2::Cursor: Cursor<K, T2::Val, G::Timestamp, T2::R>,
-            L: Fn(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val,T2::R)>)+'static
+            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val,T2::R)>)+'static
             ;
 }
 
@@ -298,7 +298,7 @@ where
             T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
             T2::Batch: Batch<K, T2::Val, G::Timestamp, T2::R>,
             T2::Cursor: Cursor<K, T2::Val, G::Timestamp, T2::R>,
-            L: Fn(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static
+            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static
     {
         self.arrange_by_key()
             .reduce_core(logic)
@@ -312,14 +312,14 @@ where
     T1::Batch: BatchReader<K, V, G::Timestamp, R>,
     T1::Cursor: Cursor<K, V, G::Timestamp, R>,
 {
-    fn reduce_core<L, T2>(&self, logic: L) -> Arranged<G, TraceAgent<T2>>
+    fn reduce_core<L, T2>(&self, mut logic: L) -> Arranged<G, TraceAgent<T2>>
         where
             T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
             T2::Val: Data,
             T2::R: Monoid,
             T2::Batch: Batch<K, T2::Val, G::Timestamp, T2::R>,
             T2::Cursor: Cursor<K, T2::Val, G::Timestamp, T2::R>,
-            L: Fn(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static {
+            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static {
 
         let mut result_trace = None;
 
@@ -499,7 +499,7 @@ where
                                 (&mut output_cursor, output_storage),
                                 (&mut batch_cursor, batch_storage),
                                 &mut interesting_times,
-                                &logic,
+                                &mut logic,
                                 &upper_limit,
                                 &mut buffers[..],
                                 &mut new_interesting_times,
@@ -594,46 +594,6 @@ fn sort_dedup<T: Ord>(list: &mut Vec<T>) {
     list.dedup();
 }
 
-/// Consolidates a vector of (element, diff) by sorting by element and collapsing all tuples with the same element.
-/// Elements with diff 0 will be removed.
-#[inline(never)]
-fn consolidate<T: Ord, R: Monoid>(list: &mut Vec<(T, R)>) {
-    list.sort_by(|x,y| x.0.cmp(&y.0));
-    for index in 1 .. list.len() {
-        if list[index].0 == list[index-1].0 {
-            let prev = ::std::mem::replace(&mut list[index-1].1, R::zero());
-            list[index].1 += &prev;
-        }
-    }
-    list.retain(|x| !x.1.is_zero());
-}
-
-/// Scans `vec[off..]` and consolidates differences of adjacent equivalent elements (after sorting by element).
-// #[inline(never)]
-pub fn consolidate_from<T: Ord+Clone, R: Monoid>(vec: &mut Vec<(T, R)>, off: usize) {
-
-    // We should do an insertion-sort like initial scan which builds up sorted, consolidated runs.
-    // In a world where there are not many results, we may never even need to call in to merge sort.
-
-    vec[off..].sort_by(|x,y| x.0.cmp(&y.0));
-    for index in (off + 1) .. vec.len() {
-        if vec[index].0 == vec[index - 1].0 {
-            let prev = ::std::mem::replace(&mut vec[index-1].1, R::zero());
-            vec[index].1 += &prev;
-        }
-    }
-
-    let mut cursor = off;
-    for index in off .. vec.len() {
-        if !vec[index].1.is_zero() {
-            vec[cursor] = vec[index].clone();
-            cursor += 1;
-        }
-    }
-    vec.truncate(cursor);
-
-}
-
 trait PerKeyCompute<'a, V1, V2, T, R1, R2>
 where
     V1: Ord+Clone+'a,
@@ -650,7 +610,7 @@ where
         output_cursor: (&mut C2, &'a C2::Storage),
         batch_cursor: (&mut C3, &'a C3::Storage),
         times: &mut Vec<T>,
-        logic: &L,
+        logic: &mut L,
         upper_limit: &Antichain<T>,
         outputs: &mut [(T, Vec<(V2, T, R2)>)],
         new_interesting: &mut Vec<T>) -> (usize, usize)
@@ -659,7 +619,7 @@ where
         C1: Cursor<K, V1, T, R1>,
         C2: Cursor<K, V2, T, R2>,
         C3: Cursor<K, V1, T, R1>,
-        L: Fn(&K, &[(&V1, R1)], &mut Vec<(V2, R2)>, &mut Vec<(V2, R2)>);
+        L: FnMut(&K, &[(&V1, R1)], &mut Vec<(V2, R2)>, &mut Vec<(V2, R2)>);
 }
 
 
@@ -672,7 +632,7 @@ mod history_replay {
     use operators::ValueHistory;
     use timely::progress::Antichain;
 
-    use super::{PerKeyCompute, consolidate, sort_dedup};
+    use super::{PerKeyCompute, sort_dedup};
 
     /// The `HistoryReplayer` is a compute strategy based on moving through existing inputs, interesting times, etc in
     /// time order, maintaining consolidated representations of updates with respect to future interesting times.
@@ -728,7 +688,7 @@ mod history_replay {
             (output_cursor, output_storage): (&mut C2, &'a C2::Storage),
             (batch_cursor, batch_storage): (&mut C3, &'a C3::Storage),
             times: &mut Vec<T>,
-            logic: &L,
+            logic: &mut L,
             upper_limit: &Antichain<T>,
             outputs: &mut [(T, Vec<(V2, T, R2)>)],
             new_interesting: &mut Vec<T>) -> (usize, usize)
@@ -737,7 +697,7 @@ mod history_replay {
             C1: Cursor<K, V1, T, R1>,
             C2: Cursor<K, V2, T, R2>,
             C3: Cursor<K, V1, T, R1>,
-            L: Fn(&K, &[(&V1, R1)], &mut Vec<(V2, R2)>, &mut Vec<(V2, R2)>)
+            L: FnMut(&K, &[(&V1, R1)], &mut Vec<(V2, R2)>, &mut Vec<(V2, R2)>)
         {
 
             // The work we need to perform is at times defined principally by the contents of `batch_cursor`
@@ -894,7 +854,7 @@ mod history_replay {
                                 self.temporary.push(next_time.join(time));
                             }
                         }
-                        consolidate(&mut self.input_buffer);
+                        crate::consolidation::consolidate(&mut self.input_buffer);
 
                         meet.as_ref().map(|meet| output_replay.advance_buffer_by(&meet));
                         for &((ref value, ref time), ref diff) in output_replay.buffer().iter() {
@@ -913,7 +873,7 @@ mod history_replay {
                                 self.temporary.push(next_time.join(&time));
                             }
                         }
-                        consolidate(&mut self.output_buffer);
+                        crate::consolidation::consolidate(&mut self.output_buffer);
 
                         // Apply user logic if non-empty input and see what happens!
                         if self.input_buffer.len() > 0 || self.output_buffer.len() > 0 {
@@ -943,7 +903,7 @@ mod history_replay {
                         // Having subtracted output updates from user output, consolidate the results to determine
                         // if there is anything worth reporting. Note: this also orders the results by value, so
                         // that could make the above merging plan even easier.
-                        consolidate(&mut self.update_buffer);
+                        crate::consolidation::consolidate(&mut self.update_buffer);
 
                         // Stash produced updates into both capability-indexed buffers and `output_produced`.
                         // The two locations are important, in that we will compact `output_produced` as we move
@@ -972,7 +932,7 @@ mod history_replay {
                                     (entry.0).1 = (entry.0).1.join(&meet);
                                 }
                             }
-                            consolidate(&mut self.output_produced);
+                            crate::consolidation::consolidate(&mut self.output_produced);
                         }
                     }
 
@@ -1071,5 +1031,3 @@ mod history_replay {
         }
     }
 }
-
-
