@@ -87,29 +87,21 @@ where
                     while batch_cursor.key_valid(&batch) {
 
                         let key = batch_cursor.key(&batch);
-                        let mut count = None;
+                        let mut count = <T1::R>::zero();
 
                         trace_cursor.seek_key(&trace_storage, key);
                         if trace_cursor.key_valid(&trace_storage) && trace_cursor.key(&trace_storage) == key {
-                            trace_cursor.map_times(&trace_storage, |_, diff| {
-                                count.as_mut().map(|c| *c += diff);
-                                if count.is_none() { count = Some(diff.clone()); }
-                            });
+                            trace_cursor.map_times(&trace_storage, |_, diff| count += diff);
                         }
 
                         batch_cursor.map_times(&batch, |time, diff| {
 
-                            if let Some(count) = count.as_ref() { 
-                                if !count.is_zero() {
-                                    session.give(((key.clone(), count.clone()), time.clone(), -1));
-                                }
+                            if !count.is_zero() {
+                                session.give(((key.clone(), count.clone()), time.clone(), -1));
                             }
-                            count.as_mut().map(|c| *c += diff);
-                            if count.is_none() { count = Some(diff.clone()); }
-                            if let Some(count) = count.as_ref() { 
-                                if !count.is_zero() {
-                                    session.give(((key.clone(), count.clone()), time.clone(), 1));
-                                }
+                            count += diff;
+                            if !count.is_zero() {
+                                session.give(((key.clone(), count.clone()), time.clone(), 1));
                             }
 
                         });

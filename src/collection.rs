@@ -483,7 +483,7 @@ impl<G: Scope, D: Data, R: Monoid> Collection<G, D, R> where G::Timestamp: Data 
     {
         use operators::consolidate::Consolidate;
         self.consolidate()
-            .inspect(|x| panic!("Assertion failed: non-empty collection: {:?}", x));
+            .inspect(|_| assert!(false));
     }
 
     /// The scope containing the underlying timely dataflow stream.

@@ -19,7 +19,7 @@ use ::{Data, ExchangeData, Collection, AsCollection};
 use ::difference::{Monoid, Abelian};
 use lattice::Lattice;
 use operators::arrange::{Arranged, ArrangeByKey, ArrangeBySelf};
-use trace::{BatchReader, Cursor};
+use trace::{BatchReader, Cursor, consolidate};
 use operators::ValueHistory;
 
 use trace::TraceReader;
@@ -539,7 +539,7 @@ where
                     //       should do this work here, or downstream at consumers.
                     // TODO: Perhaps `thinker` should have the buffer, do smarter
                     //       consolidation, and then deposit results in `session`.
-                    crate::consolidation::consolidate(temp);
+                    consolidate(temp, 0);
 
                     effort += temp.len();
                     for ((d, t), r) in temp.drain(..) {
