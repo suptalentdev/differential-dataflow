@@ -10,7 +10,7 @@
 
 use std::rc::Rc;
 
-use ::difference::Semigroup;
+use ::difference::Monoid;
 use lattice::Lattice;
 
 use trace::layers::{Trie, TupleBuilder};
@@ -52,7 +52,7 @@ pub struct OrdValBatch<K: Ord, V: Ord, T: Lattice, R> {
 }
 
 impl<K, V, T, R> BatchReader<K, V, T, R> for OrdValBatch<K, V, T, R>
-where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
+where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Monoid {
 	type Cursor = OrdValCursor<V, T, R>;
 	fn cursor(&self) -> Self::Cursor { OrdValCursor { cursor: self.layer.cursor() } }
 	fn len(&self) -> usize { <OrderedLayer<K, OrderedLayer<V, OrderedLeaf<T, R>>> as Trie>::tuples(&self.layer) }
@@ -60,7 +60,7 @@ where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, 
 }
 
 impl<K, V, T, R> Batch<K, V, T, R> for OrdValBatch<K, V, T, R>
-where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fmt::Debug+'static, R: Semigroup {
+where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fmt::Debug+'static, R: Monoid {
 	type Batcher = MergeBatcher<K, V, T, R, Self>;
 	type Builder = OrdValBuilder<K, V, T, R>;
 	type Merger = OrdValMerger<K, V, T, R>;
@@ -71,7 +71,7 @@ where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fm
 }
 
 impl<K, V, T, R> OrdValBatch<K, V, T, R>
-where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fmt::Debug+'static, R: Semigroup {
+where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fmt::Debug+'static, R: Monoid {
 	fn advance_builder_from(layer: &mut OrderedBuilder<K, OrderedBuilder<V, OrderedLeafBuilder<T, R>>>, frontier: &[T], key_pos: usize) {
 
 		let key_start = key_pos;
@@ -107,11 +107,20 @@ where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fm
 			let updates = &mut layer.vals.vals.vals[..];
 
 			// sort the range by the times (ignore the diffs; they will collapse).
-			let count = crate::consolidation::consolidate_slice(&mut updates[lower .. upper]);
+			updates[lower .. upper].sort_by(|x,y| x.0.cmp(&y.0));
 
-			for index in lower .. (lower + count) {
-				updates.swap(write_position, index);
-				write_position += 1;
+			for index in lower .. (upper - 1) {
+				if updates[index].0 == updates[index+1].0 {
+					let prev = ::std::mem::replace(&mut updates[index].1, R::zero());
+					updates[index+1].1 += &prev;
+				}
+			}
+
+			for index in lower .. upper {
+				if !updates[index].1.is_zero() {
+					updates.swap(write_position, index);
+					write_position += 1;
+				}
 			}
 		}
 		layer.vals.vals.vals.truncate(write_position);
@@ -166,7 +175,7 @@ where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fm
 }
 
 /// State for an in-progress merge.
-pub struct OrdValMerger<K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fmt::Debug+'static, R: Semigroup> {
+pub struct OrdValMerger<K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fmt::Debug+'static, R: Monoid> {
 	// first batch, and position therein.
 	lower1: usize,
 	upper1: usize,
@@ -179,7 +188,7 @@ pub struct OrdValMerger<K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+O
 }
 
 impl<K, V, T, R> Merger<K, V, T, R, OrdValBatch<K, V, T, R>> for OrdValMerger<K, V, T, R>
-where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fmt::Debug+'static, R: Semigroup {
+where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fmt::Debug+'static, R: Monoid {
 	fn new(batch1: &OrdValBatch<K, V, T, R>, batch2: &OrdValBatch<K, V, T, R>) -> Self {
 
 		assert!(batch1.upper() == batch2.lower());
@@ -245,12 +254,12 @@ where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fm
 
 /// A cursor for navigating a single layer.
 #[derive(Debug)]
-pub struct OrdValCursor<V: Ord+Clone, T: Lattice+Ord+Clone, R: Semigroup> {
+pub struct OrdValCursor<V: Ord+Clone, T: Lattice+Ord+Clone, R: Monoid> {
 	cursor: OrderedCursor<OrderedLayer<V, OrderedLeaf<T, R>>>,
 }
 
 impl<K, V, T, R> Cursor<K, V, T, R> for OrdValCursor<V, T, R>
-where K: Ord+Clone, V: Ord+Clone, T: Lattice+Ord+Clone, R: Semigroup {
+where K: Ord+Clone, V: Ord+Clone, T: Lattice+Ord+Clone, R: Monoid {
 
 	type Storage = OrdValBatch<K, V, T, R>;
 
@@ -275,12 +284,12 @@ where K: Ord+Clone, V: Ord+Clone, T: Lattice+Ord+Clone, R: Semigroup {
 
 
 /// A builder for creating layers from unsorted update tuples.
-pub struct OrdValBuilder<K: Ord, V: Ord, T: Ord+Lattice, R: Semigroup> {
+pub struct OrdValBuilder<K: Ord, V: Ord, T: Ord+Lattice, R: Monoid> {
 	builder: OrderedBuilder<K, OrderedBuilder<V, OrderedLeafBuilder<T, R>>>,
 }
 
 impl<K, V, T, R> Builder<K, V, T, R, OrdValBatch<K, V, T, R>> for OrdValBuilder<K, V, T, R>
-where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fmt::Debug+'static, R: Semigroup {
+where K: Ord+Clone+'static, V: Ord+Clone+'static, T: Lattice+Ord+Clone+::std::fmt::Debug+'static, R: Monoid {
 
 	fn new() -> Self {
 		OrdValBuilder {
@@ -320,7 +329,7 @@ pub struct OrdKeyBatch<K: Ord, T: Lattice, R> {
 }
 
 impl<K, T, R> BatchReader<K, (), T, R> for OrdKeyBatch<K, T, R>
-where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
+where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Monoid {
 	type Cursor = OrdKeyCursor<T, R>;
 	fn cursor(&self) -> Self::Cursor {
 		OrdKeyCursor {
@@ -334,7 +343,7 @@ where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
 }
 
 impl<K, T, R> Batch<K, (), T, R> for OrdKeyBatch<K, T, R>
-where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
+where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Monoid {
 	type Batcher = MergeBatcher<K, (), T, R, Self>;
 	type Builder = OrdKeyBuilder<K, T, R>;
 	type Merger = OrdKeyMerger<K, T, R>;
@@ -345,7 +354,7 @@ where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
 }
 
 impl<K, T, R> OrdKeyBatch<K, T, R>
-where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
+where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Monoid {
 	fn advance_builder_from(layer: &mut OrderedBuilder<K, OrderedLeafBuilder<T, R>>, frontier: &[T], key_pos: usize) {
 
 		let key_start = key_pos;
@@ -380,11 +389,20 @@ where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
 			let updates = &mut layer.vals.vals[..];
 
 			// sort the range by the times (ignore the diffs; they will collapse).
-		 	let count = crate::consolidation::consolidate_slice(&mut updates[lower .. upper]);
+			updates[lower .. upper].sort_by(|x,y| x.0.cmp(&y.0));
 
-			for index in lower .. (lower + count) {
-				updates.swap(write_position, index);
-				write_position += 1;
+			for index in lower .. (upper - 1) {
+				if updates[index].0 == updates[index+1].0 {
+					let prev = ::std::mem::replace(&mut updates[index].1, R::zero());
+					updates[index + 1].1 += &prev;
+				}
+			}
+
+			for index in lower .. upper {
+				if !updates[index].1.is_zero() {
+					updates.swap(write_position, index);
+					write_position += 1;
+				}
 			}
 		}
 		layer.vals.vals.truncate(write_position);
@@ -410,7 +428,7 @@ where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
 }
 
 /// State for an in-progress merge.
-pub struct OrdKeyMerger<K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup> {
+pub struct OrdKeyMerger<K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Monoid> {
 	// first batch, and position therein.
 	lower1: usize,
 	upper1: usize,
@@ -423,7 +441,7 @@ pub struct OrdKeyMerger<K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: S
 }
 
 impl<K, T, R> Merger<K, (), T, R, OrdKeyBatch<K, T, R>> for OrdKeyMerger<K, T, R>
-where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
+where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Monoid {
 	fn new(batch1: &OrdKeyBatch<K, T, R>, batch2: &OrdKeyBatch<K, T, R>) -> Self {
 
 		assert!(batch1.upper() == batch2.lower());
@@ -489,13 +507,13 @@ where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
 
 /// A cursor for navigating a single layer.
 #[derive(Debug)]
-pub struct OrdKeyCursor<T: Lattice+Ord+Clone, R: Semigroup> {
+pub struct OrdKeyCursor<T: Lattice+Ord+Clone, R: Monoid> {
 	valid: bool,
 	empty: (),
 	cursor: OrderedCursor<OrderedLeaf<T, R>>,
 }
 
-impl<K: Ord+Clone, T: Lattice+Ord+Clone, R: Semigroup> Cursor<K, (), T, R> for OrdKeyCursor<T, R> {
+impl<K: Ord+Clone, T: Lattice+Ord+Clone, R: Monoid> Cursor<K, (), T, R> for OrdKeyCursor<T, R> {
 
 	type Storage = OrdKeyBatch<K, T, R>;
 
@@ -520,12 +538,12 @@ impl<K: Ord+Clone, T: Lattice+Ord+Clone, R: Semigroup> Cursor<K, (), T, R> for O
 
 
 /// A builder for creating layers from unsorted update tuples.
-pub struct OrdKeyBuilder<K: Ord, T: Ord+Lattice, R: Semigroup> {
+pub struct OrdKeyBuilder<K: Ord, T: Ord+Lattice, R: Monoid> {
 	builder: OrderedBuilder<K, OrderedLeafBuilder<T, R>>,
 }
 
 impl<K, T, R> Builder<K, (), T, R, OrdKeyBatch<K, T, R>> for OrdKeyBuilder<K, T, R>
-where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
+where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Monoid {
 
 	fn new() -> Self {
 		OrdKeyBuilder {
@@ -552,3 +570,4 @@ where K: Ord+Clone+'static, T: Lattice+Ord+Clone+'static, R: Semigroup {
 		}
 	}
 }
+
