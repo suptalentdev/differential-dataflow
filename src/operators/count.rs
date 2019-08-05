@@ -20,14 +20,14 @@ use timely::dataflow::channels::pact::Pipeline;
 
 use lattice::Lattice;
 use ::{ExchangeData, Collection};
-use ::difference::Monoid;
+use ::difference::Semigroup;
 use hashable::Hashable;
 use collection::AsCollection;
 use operators::arrange::{Arranged, ArrangeBySelf};
 use trace::{BatchReader, Cursor, TraceReader};
 
 /// Extension trait for the `count` differential dataflow method.
-pub trait CountTotal<G: Scope, K: ExchangeData, R: Monoid> where G::Timestamp: TotalOrder+Lattice+Ord {
+pub trait CountTotal<G: Scope, K: ExchangeData, R: Semigroup> where G::Timestamp: TotalOrder+Lattice+Ord {
     /// Counts the number of occurrences of each element.
     ///
     /// # Examples
@@ -51,7 +51,7 @@ pub trait CountTotal<G: Scope, K: ExchangeData, R: Monoid> where G::Timestamp: T
     fn count_total(&self) -> Collection<G, (K, R), isize>;
 }
 
-impl<G: Scope, K: ExchangeData+Hashable, R: ExchangeData+Monoid> CountTotal<G, K, R> for Collection<G, K, R>
+impl<G: Scope, K: ExchangeData+Hashable, R: ExchangeData+Semigroup> CountTotal<G, K, R> for Collection<G, K, R>
 where G::Timestamp: TotalOrder+Lattice+Ord {
     fn count_total(&self) -> Collection<G, (K, R), isize> {
         self.arrange_by_self()
@@ -64,7 +64,7 @@ where
     G::Timestamp: TotalOrder+Lattice+Ord,
     T1: TraceReader<Val=(), Time=G::Timestamp>+Clone+'static,
     T1::Key: ExchangeData,
-    T1::R: ExchangeData+Monoid,
+    T1::R: ExchangeData+Semigroup,
     T1::Batch: BatchReader<T1::Key, (), G::Timestamp, T1::R>,
     T1::Cursor: Cursor<T1::Key, (), G::Timestamp, T1::R>,
 {
@@ -75,6 +75,9 @@ where
         let mut buffer = Vec::new();
 
         self.stream.unary(Pipeline, "CountTotal", move |_,_| move |input, output| {
+
+            // tracks the upper limit of known-complete timestamps.
+            let mut upper_limit = timely::progress::frontier::Antichain::new();
 
             input.for_each(|capability, batches| {
                 batches.swap(&mut buffer);
@@ -87,33 +90,41 @@ where
                     while batch_cursor.key_valid(&batch) {
 
                         let key = batch_cursor.key(&batch);
-                        let mut count = <T1::R>::zero();
+                        let mut count = None;
 
                         trace_cursor.seek_key(&trace_storage, key);
-                        if trace_cursor.key_valid(&trace_storage) && trace_cursor.key(&trace_storage) == key {
-                            trace_cursor.map_times(&trace_storage, |_, diff| count += diff);
+                        if trace_cursor.get_key(&trace_storage) == Some(key) {
+                            trace_cursor.map_times(&trace_storage, |_, diff| {
+                                count.as_mut().map(|c| *c += diff);
+                                if count.is_none() { count = Some(diff.clone()); }
+                            });
                         }
 
                         batch_cursor.map_times(&batch, |time, diff| {
 
-                            if !count.is_zero() {
-                                session.give(((key.clone(), count.clone()), time.clone(), -1));
+                            if let Some(count) = count.as_ref() {
+                                if !count.is_zero() {
+                                    session.give(((key.clone(), count.clone()), time.clone(), -1));
+                                }
                             }
-                            count += diff;
-                            if !count.is_zero() {
-                                session.give(((key.clone(), count.clone()), time.clone(), 1));
+                            count.as_mut().map(|c| *c += diff);
+                            if count.is_none() { count = Some(diff.clone()); }
+                            if let Some(count) = count.as_ref() {
+                                if !count.is_zero() {
+                                    session.give(((key.clone(), count.clone()), time.clone(), 1));
+                                }
                             }
-
                         });
 
                         batch_cursor.step_key(&batch);
                     }
-
-                    // tidy up the shared input trace.
-                    trace.advance_by(batch.upper());
-                    trace.distinguish_since(batch.upper());
                 }
             });
+
+            // tidy up the shared input trace.
+            trace.read_upper(&mut upper_limit);
+            trace.advance_by(upper_limit.elements());
+            trace.distinguish_since(upper_limit.elements());
         })
         .as_collection()
     }

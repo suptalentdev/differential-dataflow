@@ -10,14 +10,14 @@ use timely::dataflow::channels::pact::Pipeline;
 
 use lattice::Lattice;
 use ::{ExchangeData, Collection};
-use ::difference::{Monoid, Abelian};
+use ::difference::{Semigroup, Abelian};
 use hashable::Hashable;
 use collection::AsCollection;
 use operators::arrange::{Arranged, ArrangeBySelf};
 use trace::{BatchReader, Cursor, TraceReader};
 
 /// Extension trait for the `distinct` differential dataflow method.
-pub trait ThresholdTotal<G: Scope, K: ExchangeData, R: ExchangeData+Monoid> where G::Timestamp: TotalOrder+Lattice+Ord {
+pub trait ThresholdTotal<G: Scope, K: ExchangeData, R: ExchangeData+Semigroup> where G::Timestamp: TotalOrder+Lattice+Ord {
     /// Reduces the collection to one occurrence of each distinct element.
     ///
     /// # Examples
@@ -64,11 +64,11 @@ pub trait ThresholdTotal<G: Scope, K: ExchangeData, R: ExchangeData+Monoid> wher
     /// }
     /// ```
     fn distinct_total(&self) -> Collection<G, K, isize> {
-        self.threshold_total(|_,c| if c.is_zero() { 0 } else { 1 })
+        self.threshold_total(|_,c| if c.is_zero() { 0isize } else { 1isize })
     }
 }
 
-impl<G: Scope, K: ExchangeData+Hashable, R: ExchangeData+Monoid> ThresholdTotal<G, K, R> for Collection<G, K, R>
+impl<G: Scope, K: ExchangeData+Hashable, R: ExchangeData+Semigroup> ThresholdTotal<G, K, R> for Collection<G, K, R>
 where G::Timestamp: TotalOrder+Lattice+Ord {
     fn threshold_total<R2: Abelian, F: Fn(&K,&R)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2> {
         self.arrange_by_self()
@@ -81,7 +81,7 @@ where
     G::Timestamp: TotalOrder+Lattice+Ord,
     T1: TraceReader<Val=(), Time=G::Timestamp>+Clone+'static,
     T1::Key: ExchangeData,
-    T1::R: ExchangeData+Monoid,
+    T1::R: ExchangeData+Semigroup,
     T1::Batch: BatchReader<T1::Key, (), G::Timestamp, T1::R>,
     T1::Cursor: Cursor<T1::Key, (), G::Timestamp, T1::R>,
 {
@@ -91,53 +91,72 @@ where
         let mut trace = self.trace.clone();
         let mut buffer = Vec::new();
 
-        self.stream.unary(Pipeline, "ThresholdTotal", move |_,_| move |input, output| {
+        self.stream.unary(Pipeline, "ThresholdTotal", move |_,_| {
 
-            let thresh = &thresh;
+            // tracks the upper limit of known-complete timestamps.
+            let mut upper_limit = timely::progress::frontier::Antichain::new();
 
-            input.for_each(|capability, batches| {
-                batches.swap(&mut buffer);
-                let mut session = output.session(&capability);
-                for batch in buffer.drain(..) {
+            move |input, output| {
 
-                    let mut batch_cursor = batch.cursor();
-                    let (mut trace_cursor, trace_storage) = trace.cursor_through(batch.lower()).unwrap();
+                let thresh = &thresh;
 
-                    while batch_cursor.key_valid(&batch) {
-                        let key = batch_cursor.key(&batch);
-                        let mut count = <T1::R>::zero();
+                input.for_each(|capability, batches| {
+                    batches.swap(&mut buffer);
+                    let mut session = output.session(&capability);
+                    for batch in buffer.drain(..) {
 
-                        // Compute the multiplicity of this key before the current batch.
-                        trace_cursor.seek_key(&trace_storage, key);
-                        if trace_cursor.key_valid(&trace_storage) && trace_cursor.key(&trace_storage) == key {
-                            trace_cursor.map_times(&trace_storage, |_, diff| count += diff);
-                        }
+                        let mut batch_cursor = batch.cursor();
+                        let (mut trace_cursor, trace_storage) = trace.cursor_through(batch.lower()).unwrap();
 
-                        // Apply `thresh` both before and after `diff` is applied to `count`.
-                        // If the result is non-zero, send it along.
-                        batch_cursor.map_times(&batch, |time, diff| {
+                        while batch_cursor.key_valid(&batch) {
+                            let key = batch_cursor.key(&batch);
+                            let mut count = None;
 
-                            // Determine old and new weights.
-                            // If a count is zero, the weight must be zero.
-                            let old_weight = if count.is_zero() { R2::zero() } else { thresh(key, &count) };
-                            count += diff;
-                            let new_weight = if count.is_zero() { R2::zero() } else { thresh(key, &count) };
-
-                            let mut difference = -old_weight;
-                            difference += &new_weight;
-                            if !difference.is_zero() {
-                                session.give((key.clone(), time.clone(), difference));
+                            // Compute the multiplicity of this key before the current batch.
+                            trace_cursor.seek_key(&trace_storage, key);
+                            if trace_cursor.get_key(&trace_storage) == Some(key) {
+                                trace_cursor.map_times(&trace_storage, |_, diff| {
+                                    count.as_mut().map(|c| *c += diff);
+                                    if count.is_none() { count = Some(diff.clone()); }
+                                });
                             }
-                        });
 
-                        batch_cursor.step_key(&batch);
+                            // Apply `thresh` both before and after `diff` is applied to `count`.
+                            // If the result is non-zero, send it along.
+                            batch_cursor.map_times(&batch, |time, diff| {
+
+                                // Determine old and new weights.
+                                // If a count is zero, the weight must be zero.
+                                let old_weight = count.as_ref().map(|c| thresh(key, c));
+                                count.as_mut().map(|c| *c += diff);
+                                if count.is_none() { count = Some(diff.clone()); }
+                                let new_weight = count.as_ref().map(|c| thresh(key, c));
+
+                                let difference =
+                                match (old_weight, new_weight) {
+                                    (Some(old), Some(new)) => { let mut diff = -old; diff += &new; Some(diff) },
+                                    (Some(old), None) => { Some(-old) },
+                                    (None, Some(new)) => { Some(new) },
+                                    (None, None) => None,
+                                };
+
+                                if let Some(difference) = difference {
+                                    if !difference.is_zero() {
+                                        session.give((key.clone(), time.clone(), difference));
+                                    }
+                                }
+                            });
+
+                            batch_cursor.step_key(&batch);
+                        }
                     }
+                });
 
-                    // Tidy up the shared input trace.
-                    trace.advance_by(batch.upper());
-                    trace.distinguish_since(batch.upper());
-                }
-            });
+                // tidy up the shared input trace.
+                trace.read_upper(&mut upper_limit);
+                trace.advance_by(upper_limit.elements());
+                trace.distinguish_since(upper_limit.elements());
+            }
         })
         .as_collection()
     }

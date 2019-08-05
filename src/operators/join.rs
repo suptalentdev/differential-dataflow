@@ -16,16 +16,16 @@ use timely::dataflow::channels::pushers::tee::Tee;
 
 use hashable::Hashable;
 use ::{Data, ExchangeData, Collection, AsCollection};
-use ::difference::{Monoid, Abelian};
+use ::difference::{Semigroup, Abelian};
 use lattice::Lattice;
 use operators::arrange::{Arranged, ArrangeByKey, ArrangeBySelf};
-use trace::{BatchReader, Cursor, consolidate};
+use trace::{BatchReader, Cursor};
 use operators::ValueHistory;
 
 use trace::TraceReader;
 
 /// Join implementations for `(key,val)` data.
-pub trait Join<G: Scope, K: Data, V: Data, R: Monoid> {
+pub trait Join<G: Scope, K: Data, V: Data, R: Semigroup> {
 
     /// Matches pairs `(key,val1)` and `(key,val2)` based on `key` and then applies a function.
     ///
@@ -54,9 +54,9 @@ pub trait Join<G: Scope, K: Data, V: Data, R: Monoid> {
     where
         K: ExchangeData,
         V2: ExchangeData,
-        R2: ExchangeData+Monoid,
+        R2: ExchangeData+Semigroup,
         R: Mul<R2>,
-        <R as Mul<R2>>::Output: Monoid
+        <R as Mul<R2>>::Output: Semigroup
     {
         self.join_map(other, |k,v,v2| (k.clone(),(v.clone(),v2.clone())))
     }
@@ -85,7 +85,7 @@ pub trait Join<G: Scope, K: Data, V: Data, R: Monoid> {
     /// }
     /// ```
     fn join_map<V2, R2, D, L>(&self, other: &Collection<G, (K,V2), R2>, logic: L) -> Collection<G, D, <R as Mul<R2>>::Output>
-    where K: ExchangeData, V2: ExchangeData, R2: ExchangeData+Monoid, R: Mul<R2>, <R as Mul<R2>>::Output: Monoid, D: Data, L: FnMut(&K, &V, &V2)->D+'static;
+    where K: ExchangeData, V2: ExchangeData, R2: ExchangeData+Semigroup, R: Mul<R2>, <R as Mul<R2>>::Output: Semigroup, D: Data, L: FnMut(&K, &V, &V2)->D+'static;
 
     /// Matches pairs `(key, val)` and `key` based on `key`, producing the former with frequencies multiplied.
     ///
@@ -115,7 +115,7 @@ pub trait Join<G: Scope, K: Data, V: Data, R: Monoid> {
     /// }
     /// ```
     fn semijoin<R2>(&self, other: &Collection<G, K, R2>) -> Collection<G, (K, V), <R as Mul<R2>>::Output>
-    where K: ExchangeData, R2: ExchangeData+Monoid, R: Mul<R2>, <R as Mul<R2>>::Output: Monoid;
+    where K: ExchangeData, R2: ExchangeData+Semigroup, R: Mul<R2>, <R as Mul<R2>>::Output: Semigroup;
     /// Subtracts the semijoin with `other` from `self`.
     ///
     /// In the case that `other` has multiplicities zero or one this results
@@ -148,7 +148,7 @@ pub trait Join<G: Scope, K: Data, V: Data, R: Monoid> {
     /// }
     /// ```
     fn antijoin<R2>(&self, other: &Collection<G, K, R2>) -> Collection<G, (K, V), R>
-    where K: ExchangeData, R2: ExchangeData+Monoid, R: Mul<R2, Output = R>, R: Abelian;
+    where K: ExchangeData, R2: ExchangeData+Semigroup, R: Mul<R2, Output = R>, R: Abelian;
 }
 
 impl<G, K, V, R> Join<G, K, V, R> for Collection<G, (K, V), R>
@@ -156,24 +156,24 @@ where
     G: Scope,
     K: ExchangeData+Hashable,
     V: ExchangeData,
-    R: ExchangeData+Monoid,
+    R: ExchangeData+Semigroup,
     G::Timestamp: Lattice+Ord,
 {
-    fn join_map<V2: ExchangeData, R2: ExchangeData+Monoid, D: Data, L>(&self, other: &Collection<G, (K, V2), R2>, mut logic: L) -> Collection<G, D, <R as Mul<R2>>::Output>
-    where R: Mul<R2>, <R as Mul<R2>>::Output: Monoid, L: FnMut(&K, &V, &V2)->D+'static {
+    fn join_map<V2: ExchangeData, R2: ExchangeData+Semigroup, D: Data, L>(&self, other: &Collection<G, (K, V2), R2>, mut logic: L) -> Collection<G, D, <R as Mul<R2>>::Output>
+    where R: Mul<R2>, <R as Mul<R2>>::Output: Semigroup, L: FnMut(&K, &V, &V2)->D+'static {
         let arranged1 = self.arrange_by_key();
         let arranged2 = other.arrange_by_key();
         arranged1.join_core(&arranged2, move |k,v1,v2| Some(logic(k,v1,v2)))
     }
 
-    fn semijoin<R2: ExchangeData+Monoid>(&self, other: &Collection<G, K, R2>) -> Collection<G, (K, V), <R as Mul<R2>>::Output>
-    where R: Mul<R2>, <R as Mul<R2>>::Output: Monoid {
+    fn semijoin<R2: ExchangeData+Semigroup>(&self, other: &Collection<G, K, R2>) -> Collection<G, (K, V), <R as Mul<R2>>::Output>
+    where R: Mul<R2>, <R as Mul<R2>>::Output: Semigroup {
         let arranged1 = self.arrange_by_key();
         let arranged2 = other.arrange_by_self();
         arranged1.join_core(&arranged2, |k,v,_| Some((k.clone(), v.clone())))
     }
 
-    fn antijoin<R2: ExchangeData+Monoid>(&self, other: &Collection<G, K, R2>) -> Collection<G, (K, V), R>
+    fn antijoin<R2: ExchangeData+Semigroup>(&self, other: &Collection<G, K, R2>) -> Collection<G, (K, V), R>
     where R: Mul<R2, Output=R>, R: Abelian {
         self.concat(&self.semijoin(other).negate())
     }
@@ -186,23 +186,23 @@ where
     Tr: TraceReader<Time=G::Timestamp>+Clone+'static,
     Tr::Key: Data+Hashable,
     Tr::Val: Data,
-    Tr::R: Monoid,
+    Tr::R: Semigroup,
     Tr::Batch: BatchReader<Tr::Key,Tr::Val,G::Timestamp,Tr::R>+'static,
     Tr::Cursor: Cursor<Tr::Key,Tr::Val,G::Timestamp,Tr::R>+'static,
 {
-    fn join_map<V2: ExchangeData, R2: ExchangeData+Monoid, D: Data, L>(&self, other: &Collection<G, (Tr::Key, V2), R2>, mut logic: L) -> Collection<G, D, <Tr::R as Mul<R2>>::Output>
-    where Tr::Key: ExchangeData, Tr::R: Mul<R2>, <Tr::R as Mul<R2>>::Output: Monoid, L: FnMut(&Tr::Key, &Tr::Val, &V2)->D+'static {
+    fn join_map<V2: ExchangeData, R2: ExchangeData+Semigroup, D: Data, L>(&self, other: &Collection<G, (Tr::Key, V2), R2>, mut logic: L) -> Collection<G, D, <Tr::R as Mul<R2>>::Output>
+    where Tr::Key: ExchangeData, Tr::R: Mul<R2>, <Tr::R as Mul<R2>>::Output: Semigroup, L: FnMut(&Tr::Key, &Tr::Val, &V2)->D+'static {
         let arranged2 = other.arrange_by_key();
         self.join_core(&arranged2, move |k,v1,v2| Some(logic(k,v1,v2)))
     }
 
-    fn semijoin<R2: ExchangeData+Monoid>(&self, other: &Collection<G, Tr::Key, R2>) -> Collection<G, (Tr::Key, Tr::Val), <Tr::R as Mul<R2>>::Output>
-    where Tr::Key: ExchangeData, Tr::R: Mul<R2>, <Tr::R as Mul<R2>>::Output: Monoid {
+    fn semijoin<R2: ExchangeData+Semigroup>(&self, other: &Collection<G, Tr::Key, R2>) -> Collection<G, (Tr::Key, Tr::Val), <Tr::R as Mul<R2>>::Output>
+    where Tr::Key: ExchangeData, Tr::R: Mul<R2>, <Tr::R as Mul<R2>>::Output: Semigroup {
         let arranged2 = other.arrange_by_self();
         self.join_core(&arranged2, |k,v,_| Some((k.clone(), v.clone())))
     }
 
-    fn antijoin<R2: ExchangeData+Monoid>(&self, other: &Collection<G, Tr::Key, R2>) -> Collection<G, (Tr::Key, Tr::Val), Tr::R>
+    fn antijoin<R2: ExchangeData+Semigroup>(&self, other: &Collection<G, Tr::Key, R2>) -> Collection<G, (Tr::Key, Tr::Val), Tr::R>
     where Tr::Key: ExchangeData, Tr::R: Mul<R2, Output=Tr::R>, Tr::R: Abelian {
         self.as_collection(|k,v| (k.clone(), v.clone()))
             .concat(&self.semijoin(other).negate())
@@ -214,7 +214,7 @@ where
 /// This method is used by the various `join` implementations, but it can also be used
 /// directly in the event that one has a handle to an `Arranged<G,T>`, perhaps because
 /// the arrangement is available for re-use, or from the output of a `group` operator.
-pub trait JoinCore<G: Scope, K: 'static, V: 'static, R: Monoid> where G::Timestamp: Lattice+Ord {
+pub trait JoinCore<G: Scope, K: 'static, V: 'static, R: Semigroup> where G::Timestamp: Lattice+Ord {
     /// Joins two arranged collections with the same key type.
     ///
     /// Each matching pair of records `(key, val1)` and `(key, val2)` are subjected to the `result` function,
@@ -257,9 +257,9 @@ pub trait JoinCore<G: Scope, K: 'static, V: 'static, R: Monoid> where G::Timesta
         Tr2::Batch: BatchReader<K, Tr2::Val, G::Timestamp, Tr2::R>+'static,
         Tr2::Cursor: Cursor<K, Tr2::Val, G::Timestamp, Tr2::R>+'static,
         Tr2::Val: Ord+Clone+Debug+'static,
-        Tr2::R: Monoid,
+        Tr2::R: Semigroup,
         R: Mul<Tr2::R>,
-        <R as Mul<Tr2::R>>::Output: Monoid,
+        <R as Mul<Tr2::R>>::Output: Semigroup,
         I: IntoIterator,
         I::Item: Data,
         L: FnMut(&K,&V,&Tr2::Val)->I+'static,
@@ -272,7 +272,7 @@ where
     G: Scope,
     K: ExchangeData+Hashable,
     V: ExchangeData,
-    R: ExchangeData+Monoid,
+    R: ExchangeData+Semigroup,
     G::Timestamp: Lattice+Ord,
 {
     fn join_core<Tr2,I,L> (&self, stream2: &Arranged<G,Tr2>, result: L) -> Collection<G,I::Item,<R as Mul<Tr2::R>>::Output>
@@ -281,9 +281,9 @@ where
         Tr2::Batch: BatchReader<K, Tr2::Val, G::Timestamp, Tr2::R>+'static,
         Tr2::Cursor: Cursor<K, Tr2::Val, G::Timestamp, Tr2::R>+'static,
         Tr2::Val: Ord+Clone+Debug+'static,
-        Tr2::R: Monoid,
+        Tr2::R: Semigroup,
         R: Mul<Tr2::R>,
-        <R as Mul<Tr2::R>>::Output: Monoid,
+        <R as Mul<Tr2::R>>::Output: Semigroup,
         I: IntoIterator,
         I::Item: Data,
         L: FnMut(&K,&V,&Tr2::Val)->I+'static,
@@ -300,7 +300,7 @@ impl<G, T1> JoinCore<G, T1::Key, T1::Val, T1::R> for Arranged<G,T1>
         T1: TraceReader<Time=G::Timestamp>+Clone+'static,
         T1::Key: Ord+Debug+'static,
         T1::Val: Ord+Clone+Debug+'static,
-        T1::R: Monoid,
+        T1::R: Semigroup,
         T1::Batch: BatchReader<T1::Key,T1::Val,G::Timestamp,T1::R>+'static,
         T1::Cursor: Cursor<T1::Key,T1::Val,G::Timestamp,T1::R>+'static,
 {
@@ -310,9 +310,9 @@ impl<G, T1> JoinCore<G, T1::Key, T1::Val, T1::R> for Arranged<G,T1>
         Tr2: TraceReader<Key=T1::Key,Time=G::Timestamp>+Clone+'static,
         Tr2::Batch: BatchReader<T1::Key, Tr2::Val, G::Timestamp, Tr2::R>+'static,
         Tr2::Cursor: Cursor<T1::Key, Tr2::Val, G::Timestamp, Tr2::R>+'static,
-        Tr2::R: Monoid,
+        Tr2::R: Semigroup,
         T1::R: Mul<Tr2::R>,
-        <T1::R as Mul<Tr2::R>>::Output: Monoid,
+        <T1::R as Mul<Tr2::R>>::Output: Semigroup,
         I: IntoIterator,
         I::Item: Data,
         L: FnMut(&T1::Key,&T1::Val,&Tr2::Val)->I+'static {
@@ -322,8 +322,8 @@ impl<G, T1> JoinCore<G, T1::Key, T1::Val, T1::R> for Arranged<G,T1>
         let mut trace2 = Some(other.trace.clone());
 
         // acknowledged frontier for each input.
-        let mut acknowledged1: Option<Vec<G::Timestamp>> = None;
-        let mut acknowledged2: Option<Vec<G::Timestamp>> = None;
+        let mut acknowledged1: Option<timely::progress::frontier::Antichain<G::Timestamp>> = None;
+        let mut acknowledged2: Option<timely::progress::frontier::Antichain<G::Timestamp>> = None;
 
         // deferred work of batches from each input.
         let mut todo1 = Vec::new();
@@ -356,30 +356,36 @@ impl<G, T1> JoinCore<G, T1::Key, T1::Val, T1::R> for Arranged<G,T1>
                         for batch1 in input1_buffer.drain(..) {
                             if let Some(acknowledged2) = &acknowledged2 {
                                 // TODO : cursor_through may be problematic for pre-merged traces.
-                                let (trace2_cursor, trace2_storage) = trace2.cursor_through(&acknowledged2[..]).unwrap();
+                                // A trace should provide the contract that whatever its `distinguish_since` capability,
+                                // it is safe (and reasonable) to await delivery of batches up through that frontier.
+                                // In this case, we should be able to await (not block on) the arrival of these batches.
+                                let (trace2_cursor, trace2_storage) = trace2.cursor_through(acknowledged2.elements()).unwrap();
                                 let batch1_cursor = batch1.cursor();
                                 todo1.push(Deferred::new(trace2_cursor, trace2_storage, batch1_cursor, batch1.clone(), capability.clone(), |r2,r1| (r1.clone()) * (r2.clone())));
-                                // debug_assert!(batch1.description().lower() == &acknowledged1[..]);
                             }
-                            acknowledged1 = Some(batch1.description().upper().to_vec());
+
+                            // It would be alarming (incorrect) to receieve a batch that does not advance the acknowledged
+                            // frontier, as each batch must be greater than previous batches, and the input.
+                            if acknowledged1.is_none() { acknowledged1 = Some(timely::progress::frontier::Antichain::from_elem(<G::Timestamp>::minimum())); }
+                            if let Some(acknowledged1) = &mut acknowledged1 {
+                                assert!(batch1.upper().iter().all(|t| acknowledged1.less_equal(t)));
+                                acknowledged1.clear();
+                                acknowledged1.extend(batch1.upper().iter().cloned());
+                            }
                         }
                     }
                 });
 
                 // We may learn that input frontiers have advanced without sending batches.
-                acknowledged1
-                    .as_mut()
-                    .map(|ack| {
-                        antichain.clear();
-                        for ack in ack.iter() {
-                            for time in input1.frontier().frontier().iter() {
-                                antichain.insert(ack.join(time));
-                            }
+                if let Some(acknowledged1) = acknowledged1.as_mut() {
+                    antichain.clear();
+                    for element in acknowledged1.elements() {
+                        for frontier in input1.frontier().frontier().iter() {
+                            antichain.insert(element.join(frontier));
                         }
-                        ack.clear();
-                        ack.extend(antichain.elements().iter().cloned());
-                    });
-
+                    }
+                    std::mem::swap(&mut antichain, acknowledged1);
+                }
 
                 // drain input 2, prepare work.
                 input2.for_each(|capability, data| {
@@ -389,29 +395,35 @@ impl<G, T1> JoinCore<G, T1::Key, T1::Val, T1::R> for Arranged<G,T1>
                         for batch2 in input2_buffer.drain(..) {
                             if let Some(acknowledged1) = &acknowledged1 {
                                 // TODO : cursor_through may be problematic for pre-merged traces.
-                                let (trace1_cursor, trace1_storage) = trace1.cursor_through(&acknowledged1[..]).unwrap();
+                                // A trace should provide the contract that whatever its `distinguish_since` capability,
+                                // it is safe (and reasonable) to await delivery of batches up through that frontier.
+                                // In this case, we should be able to await (not block on) the arrival of these batches.
+                                let (trace1_cursor, trace1_storage) = trace1.cursor_through(acknowledged1.elements()).unwrap();
                                 let batch2_cursor = batch2.cursor();
                                 todo2.push(Deferred::new(trace1_cursor, trace1_storage, batch2_cursor, batch2.clone(), capability.clone(), |r1,r2| (r1.clone()) * (r2.clone())));
-                                // debug_assert!(batch2.description().lower() == &acknowledged2[..]);
                             }
-                            acknowledged2 = Some(batch2.description().upper().to_vec());
+                            // It would be alarming (incorrect) to receieve a batch that does not advance the acknowledged
+                            // frontier, as each batch must be greater than previous batches, and the input.
+                            if acknowledged2.is_none() { acknowledged2 = Some(timely::progress::frontier::Antichain::from_elem(<G::Timestamp>::minimum())); }
+                            if let Some(acknowledged2) = &mut acknowledged2 {
+                                assert!(batch2.upper().iter().all(|t| acknowledged2.less_equal(t)));
+                                acknowledged2.clear();
+                                acknowledged2.extend(batch2.upper().iter().cloned());
+                            }
                         }
                     }
                 });
 
                 // We may learn that input frontiers have advanced without sending batches.
-                acknowledged2
-                    .as_mut()
-                    .map(|ack| {
-                        antichain.clear();
-                        for ack in ack.iter() {
-                            for time in input2.frontier().frontier().iter() {
-                                antichain.insert(ack.join(time));
-                            }
+                if let Some(acknowledged2) = acknowledged2.as_mut() {
+                    antichain.clear();
+                    for element in acknowledged2.elements() {
+                        for frontier in input2.frontier().frontier().iter() {
+                            antichain.insert(element.join(frontier));
                         }
-                        ack.clear();
-                        ack.extend(antichain.elements().iter().cloned());
-                    });
+                    }
+                    std::mem::swap(&mut antichain, acknowledged2);
+                }
 
                 // An arbitrary number, whose value guides the "responsiveness" of `join`; the operator
                 // yields after producing this many records, to allow downstream operators to work and
@@ -440,7 +452,7 @@ impl<G, T1> JoinCore<G, T1::Key, T1::Val, T1::R> for Arranged<G,T1>
                 if let Some(ref mut trace2) = trace2 {
                     trace2.advance_by(&input1.frontier().frontier()[..]);
                     if let Some(acknowledged2) = &acknowledged2 {
-                        trace2.distinguish_since(&acknowledged2[..]);
+                        trace2.distinguish_since(acknowledged2.elements());
                     }
                 }
 
@@ -449,7 +461,7 @@ impl<G, T1> JoinCore<G, T1::Key, T1::Val, T1::R> for Arranged<G,T1>
                 if let Some(ref mut trace1) = trace1 {
                     trace1.advance_by(&input2.frontier().frontier()[..]);
                     if let Some(acknowledged1) = &acknowledged1 {
-                        trace1.distinguish_since(&acknowledged1[..]);
+                        trace1.distinguish_since(acknowledged1.elements());
                     }
                 }
             }
@@ -468,8 +480,8 @@ where
     V1: Ord+Clone,
     V2: Ord+Clone,
     T: Timestamp+Lattice+Ord+Debug,
-    R1: Monoid,
-    R2: Monoid,
+    R1: Semigroup,
+    R2: Semigroup,
     C1: Cursor<K, V1, T, R1>,
     C2: Cursor<K, V2, T, R2>,
     M: FnMut(&R1,&R2)->R3,
@@ -493,9 +505,9 @@ where
     V1: Ord+Clone+Debug,
     V2: Ord+Clone+Debug,
     T: Timestamp+Lattice+Ord+Debug,
-    R1: Monoid,
-    R2: Monoid,
-    R3: Monoid,
+    R1: Semigroup,
+    R2: Semigroup,
+    R3: Semigroup,
     C1: Cursor<K, V1, T, R1>,
     C2: Cursor<K, V2, T, R2>,
     M: FnMut(&R1,&R2)->R3,
@@ -565,7 +577,7 @@ where
                     //       should do this work here, or downstream at consumers.
                     // TODO: Perhaps `thinker` should have the buffer, do smarter
                     //       consolidation, and then deposit results in `session`.
-                    consolidate(temp, 0);
+                    crate::consolidation::consolidate(temp);
 
                     effort += temp.len();
                     for ((d, t), r) in temp.drain(..) {
@@ -588,12 +600,12 @@ where
     }
 }
 
-struct JoinThinker<'a, V1: Ord+Clone+'a, V2: Ord+Clone+'a, T: Lattice+Ord+Clone, R1: Monoid, R2: Monoid> {
+struct JoinThinker<'a, V1: Ord+Clone+'a, V2: Ord+Clone+'a, T: Lattice+Ord+Clone, R1: Semigroup, R2: Semigroup> {
     pub history1: ValueHistory<'a, V1, T, R1>,
     pub history2: ValueHistory<'a, V2, T, R2>,
 }
 
-impl<'a, V1: Ord+Clone, V2: Ord+Clone, T: Lattice+Ord+Clone, R1: Monoid, R2: Monoid> JoinThinker<'a, V1, V2, T, R1, R2>
+impl<'a, V1: Ord+Clone, V2: Ord+Clone, T: Lattice+Ord+Clone, R1: Semigroup, R2: Semigroup> JoinThinker<'a, V1, V2, T, R1, R2>
 where V1: Debug, V2: Debug, T: Debug
 {
     fn new() -> Self {
