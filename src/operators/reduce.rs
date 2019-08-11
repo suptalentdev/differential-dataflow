@@ -335,15 +335,7 @@ where
                     register.get::<::logging::DifferentialEvent>("differential/arrange")
                 };
 
-                let activator =
-                if ::std::env::var("DIFFERENTIAL_EAGER_MERGE") == Ok("ZOMGYES".to_owned()) {
-                    Some(self.stream.scope().activator_for(&operator_info.address[..]))
-                }
-                else {
-                    None
-                };
-
-                let empty = T2::new(operator_info, logger, activator);
+                let empty = T2::new(operator_info, logger);
                 let mut source_trace = self.trace.clone();
 
 
