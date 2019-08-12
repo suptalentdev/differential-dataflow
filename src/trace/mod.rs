@@ -133,39 +133,6 @@ pub trait TraceReader {
 		});
 	}
 
-    /// Advances `upper` by any empty batches, as if they had been received.
-    fn advance_upper(&mut self, upper: &mut Antichain<Self::Time>)
-    where
-        Self::Time: Timestamp,
-    {
-        let mut found = false;  // true once upper is found in a batch upper.
-        let mut cease = false;  // true once found, and then a non-empty batch.
-
-        self.map_batches(|batch| {
-
-            // We should advance until we find the indicated upper bound.
-            // We then copy upper bounds from each subsequent empty batch.
-            // We stop as soon as we see a non-empty batch, without adopting
-            // its upper bound.
-
-            if !cease {
-                // Cease the once we've found our goal and then see a non-empty batch.
-                if found && !batch.is_empty() {
-                    cease = true;
-                }
-                // If we find the right upper bound, good for us!
-                if !found && batch.upper() == upper.elements() {
-                    found = true;
-                }
-                // Empty batches once found advance the frontier.
-                if batch.is_empty() && found {
-                    upper.clear();
-                    upper.extend(batch.upper().iter().cloned());
-                }
-            }
-        });
-    }
-
 }
 
 /// An append-only collection of `(key, val, time, diff)` tuples.
@@ -179,14 +146,7 @@ pub trait Trace : TraceReader
 where <Self as TraceReader>::Batch: Batch<Self::Key, Self::Val, Self::Time, Self::R> {
 
 	/// Allocates a new empty trace.
-	fn new(
-		info: ::timely::dataflow::operators::generic::OperatorInfo,
-		logging: Option<::logging::Logger>,
-		activator: Option<timely::scheduling::activate::Activator>,
-	) -> Self;
-
-	///	Exert merge effort, even without updates.
-	fn exert(&mut self, effort: usize);
+	fn new(info: ::timely::dataflow::operators::generic::OperatorInfo, logging: Option<::logging::Logger>) -> Self;
 
 	/// Introduces a batch of updates to the trace.
 	///
@@ -247,10 +207,10 @@ pub trait Batch<K, V, T, R> : BatchReader<K, V, T, R> where Self: ::std::marker:
 	fn begin_merge(&self, other: &Self) -> Self::Merger {
 		Self::Merger::new(self, other)
 	}
-	///
-	fn empty(lower: &[T], upper: &[T], since: &[T]) -> Self {
-		<Self::Builder>::new().done(lower, upper, since)
-	}
+	// ///
+	// fn empty(lower: &[T], upper: &[T], since: &[T]) -> Output {
+	// 	<Self::Builder>::new().done(lower, upper, since)
+	// }
 }
 
 /// Functionality for collecting and batching updates.

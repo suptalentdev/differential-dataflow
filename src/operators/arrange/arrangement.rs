@@ -522,7 +522,7 @@ where
 
             let reader = &mut reader;
 
-            self.inner.unary_frontier(pact, name, move |_capability, info| {
+            self.inner.unary_frontier(pact, name, move |_capability, _info| {
 
                 // Acquire a logger for arrange events.
                 let logger = {
@@ -539,17 +539,7 @@ where
 
                 let mut buffer = Vec::new();
 
-                let activator =
-                if ::std::env::var("DIFFERENTIAL_EAGER_MERGE") == Ok("ZOMGYES".to_owned()) {
-                    // println!("activation requested");
-                    Some(self.scope().activator_for(&info.address[..]))
-                }
-                else {
-                    // println!("activation not requested");
-                    None
-                };
-
-                let empty_trace = Tr::new(info, logger, activator);
+                let empty_trace = Tr::new(_info, logger);
                 let (reader_local, mut writer) = TraceAgent::new(empty_trace);
                 *reader = Some(reader_local);
 
@@ -651,7 +641,6 @@ where
                         input_frontier.clear();
                         input_frontier.extend(input.frontier().frontier().iter().cloned());
                     }
-                    writer.exert();
                 }
             })
         };
