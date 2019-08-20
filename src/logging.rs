@@ -23,8 +23,6 @@ pub enum DifferentialEvent {
     Batch(BatchEvent),
     /// Merge start and stop events.
     Merge(MergeEvent),
-    /// Batch dropped when trace dropped.
-    Drop(DropEvent),
     /// A merge failed to complete in time.
     MergeShortfall(MergeShortfall),
 }
@@ -39,18 +37,6 @@ pub struct BatchEvent {
 }
 
 impl From<BatchEvent> for DifferentialEvent { fn from(e: BatchEvent) -> Self { DifferentialEvent::Batch(e) } }
-
-
-/// Either the start or end of a merge event.
-#[derive(Debug, Clone, Abomonation, Ord, PartialOrd, Eq, PartialEq)]
-pub struct DropEvent {
-    /// Operator identifier.
-    pub operator: usize,
-    /// Which order of magnitude.
-    pub length: usize,
-}
-
-impl From<DropEvent> for DifferentialEvent { fn from(e: DropEvent) -> Self { DifferentialEvent::Drop(e) } }
 
 /// Either the start or end of a merge event.
 #[derive(Debug, Clone, Abomonation, Ord, PartialOrd, Eq, PartialEq)]
