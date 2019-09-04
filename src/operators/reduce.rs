@@ -153,16 +153,7 @@ pub trait Threshold<G: Scope, K: Data, R1: Semigroup> where G::Timestamp: Lattic
     /// }
     /// ```
     fn distinct(&self) -> Collection<G, K, isize> {
-        self.distinct_core()
-    }
-
-    /// Distinct for general integer differences.
-    ///
-    /// This method allows `distinct` to produce collections whose difference
-    /// type is something other than an `isize` integer, for example perhaps an
-    /// `i32`.
-    fn distinct_core<R2: Abelian+From<i8>>(&self) -> Collection<G, K, R2> {
-        self.threshold_named("Distinct", |_,_| R2::from(1i8))
+        self.threshold_named("Distinct", |_,c| if c.is_zero() { 0 } else { 1 })
     }
 }
 
@@ -354,7 +345,15 @@ where
                     register.get::<::logging::DifferentialEvent>("differential/arrange")
                 };
 
-                let empty = T2::new(operator_info, logger);
+                let activator =
+                if ::std::env::var("DIFFERENTIAL_EAGER_MERGE") == Ok("ZOMGYES".to_owned()) {
+                    Some(self.stream.scope().activator_for(&operator_info.address[..]))
+                }
+                else {
+                    None
+                };
+
+                let empty = T2::new(operator_info, logger, activator);
                 let mut source_trace = self.trace.clone();
 
 
