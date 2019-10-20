@@ -133,20 +133,35 @@ pub trait TraceReader {
 		});
 	}
 
-    /// Advances `upper` by any empty batches.
-    ///
-    /// An empty batch whose `batch.lower` bound equals the current
-    /// contents of `upper` will advance `upper` to `batch.upper`.
-    /// Taken across all batches, this should advance `upper` across
-    /// empty batch regions.
+    /// Advances `upper` by any empty batches, as if they had been received.
     fn advance_upper(&mut self, upper: &mut Antichain<Self::Time>)
     where
         Self::Time: Timestamp,
     {
+        let mut found = false;  // true once upper is found in a batch upper.
+        let mut cease = false;  // true once found, and then a non-empty batch.
+
         self.map_batches(|batch| {
-            if batch.is_empty() && batch.lower() == upper.elements() {
-                upper.clear();
-                upper.extend(batch.upper().iter().cloned());
+
+            // We should advance until we find the indicated upper bound.
+            // We then copy upper bounds from each subsequent empty batch.
+            // We stop as soon as we see a non-empty batch, without adopting
+            // its upper bound.
+
+            if !cease {
+                // Cease the once we've found our goal and then see a non-empty batch.
+                if found && !batch.is_empty() {
+                    cease = true;
+                }
+                // If we find the right upper bound, good for us!
+                if !found && batch.upper() == upper.elements() {
+                    found = true;
+                }
+                // Empty batches once found advance the frontier.
+                if batch.is_empty() && found {
+                    upper.clear();
+                    upper.extend(batch.upper().iter().cloned());
+                }
             }
         });
     }
@@ -164,7 +179,14 @@ pub trait Trace : TraceReader
 where <Self as TraceReader>::Batch: Batch<Self::Key, Self::Val, Self::Time, Self::R> {
 
 	/// Allocates a new empty trace.
-	fn new(info: ::timely::dataflow::operators::generic::OperatorInfo, logging: Option<::logging::Logger>) -> Self;
+	fn new(
+		info: ::timely::dataflow::operators::generic::OperatorInfo,
+		logging: Option<::logging::Logger>,
+		activator: Option<timely::scheduling::activate::Activator>,
+	) -> Self;
+
+	///	Exert merge effort, even without updates.
+	fn exert(&mut self, effort: &mut isize);
 
 	/// Introduces a batch of updates to the trace.
 	///
@@ -225,10 +247,10 @@ pub trait Batch<K, V, T, R> : BatchReader<K, V, T, R> where Self: ::std::marker:
 	fn begin_merge(&self, other: &Self) -> Self::Merger {
 		Self::Merger::new(self, other)
 	}
-	// ///
-	// fn empty(lower: &[T], upper: &[T], since: &[T]) -> Output {
-	// 	<Self::Builder>::new().done(lower, upper, since)
-	// }
+	///
+	fn empty(lower: &[T], upper: &[T], since: &[T]) -> Self {
+		<Self::Builder>::new().done(lower, upper, since)
+	}
 }
 
 /// Functionality for collecting and batching updates.
@@ -267,7 +289,7 @@ pub trait Merger<K, V, T, R, Output: Batch<K, V, T, R>> {
 	///
 	/// If `fuel` is non-zero after the call, the merging is complete and
 	/// one should call `done` to extract the merged results.
-	fn work(&mut self, source1: &Output, source2: &Output, frontier: &Option<Vec<T>>, fuel: &mut usize);
+	fn work(&mut self, source1: &Output, source2: &Output, frontier: &Option<Vec<T>>, fuel: &mut isize);
 	/// Extracts merged results.
 	///
 	/// This method should only be called after `work` has been called and
@@ -374,7 +396,7 @@ pub mod rc_blanket_impls {
 	/// Represents a merge in progress.
 	impl<K,V,T,R,B:Batch<K,V,T,R>> Merger<K, V, T, R, Rc<B>> for RcMerger<K,V,T,R,B> {
 		fn new(source1: &Rc<B>, source2: &Rc<B>) -> Self { RcMerger { merger: B::begin_merge(source1, source2) } }
-		fn work(&mut self, source1: &Rc<B>, source2: &Rc<B>, frontier: &Option<Vec<T>>, fuel: &mut usize) { self.merger.work(source1, source2, frontier, fuel) }
+		fn work(&mut self, source1: &Rc<B>, source2: &Rc<B>, frontier: &Option<Vec<T>>, fuel: &mut isize) { self.merger.work(source1, source2, frontier, fuel) }
 		fn done(self) -> Rc<B> { Rc::new(self.merger.done()) }
 	}
 }
@@ -492,7 +514,7 @@ pub mod abomonated_blanket_impls {
 		fn new(source1: &Abomonated<B,Vec<u8>>, source2: &Abomonated<B,Vec<u8>>) -> Self {
 			AbomonatedMerger { merger: B::begin_merge(source1, source2) }
 		}
-		fn work(&mut self, source1: &Abomonated<B,Vec<u8>>, source2: &Abomonated<B,Vec<u8>>, frontier: &Option<Vec<T>>, fuel: &mut usize) {
+		fn work(&mut self, source1: &Abomonated<B,Vec<u8>>, source2: &Abomonated<B,Vec<u8>>, frontier: &Option<Vec<T>>, fuel: &mut isize) {
 			self.merger.work(source1, source2, frontier, fuel)
 		}
 		fn done(self) -> Abomonated<B, Vec<u8>> {
