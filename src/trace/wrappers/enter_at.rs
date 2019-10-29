@@ -1,5 +1,7 @@
 //! Wrappers to provide trace access to nested scopes.
 
+use std::rc::Rc;
+
 use timely::progress::timestamp::Refines;
 use timely::progress::Timestamp;
 
@@ -15,13 +17,12 @@ where
     trace: Tr,
     stash1: Vec<Tr::Time>,
     stash2: Vec<TInner>,
-    logic: F,
+    logic: Rc<F>,
 }
 
 impl<Tr,TInner,F> Clone for TraceEnter<Tr, TInner,F>
 where
     Tr: TraceReader+Clone,
-    F: Clone,
 {
     fn clone(&self) -> Self {
         TraceEnter {
@@ -43,7 +44,7 @@ where
     TInner: Refines<Tr::Time>+Lattice,
     Tr::R: 'static,
     F: 'static,
-    F: FnMut(&Tr::Key, &Tr::Val, &Tr::Time)->TInner+Clone,
+    F: Fn(&Tr::Key, &Tr::Val, &Tr::Time)->TInner,
 {
     type Key = Tr::Key;
     type Val = Tr::Val;
@@ -106,7 +107,7 @@ where
     TInner: Refines<Tr::Time>+Lattice,
 {
     /// Makes a new trace wrapper
-    pub fn make_from(trace: Tr, logic: F) -> Self {
+    pub fn make_from(trace: Tr, logic: Rc<F>) -> Self {
         TraceEnter {
             trace: trace,
             stash1: Vec::new(),
@@ -122,10 +123,10 @@ pub struct BatchEnter<K, V, T, R, B, TInner, F> {
     phantom: ::std::marker::PhantomData<(K, V, T, R)>,
     batch: B,
     description: Description<TInner>,
-    logic: F,
+    logic: Rc<F>,
 }
 
-impl<K, V, T, R, B: Clone, TInner: Clone, F: Clone> Clone for BatchEnter<K, V, T, R, B, TInner, F> {
+impl<K, V, T, R, B: Clone, TInner: Clone, F> Clone for BatchEnter<K, V, T, R, B, TInner, F> {
     fn clone(&self) -> Self {
         BatchEnter {
             phantom: ::std::marker::PhantomData,
@@ -141,7 +142,7 @@ where
     B: BatchReader<K, V, T, R>,
     T: Timestamp,
     TInner: Refines<T>+Lattice,
-    F: FnMut(&K, &V, &T)->TInner+Clone,
+    F: Fn(&K, &V, &T)->TInner,
 {
     type Cursor = BatchCursorEnter<K, V, T, R, B, TInner, F>;
 
@@ -159,7 +160,7 @@ where
     TInner: Refines<T>+Lattice,
 {
     /// Makes a new batch wrapper
-    pub fn make_from(batch: B, logic: F) -> Self {
+    pub fn make_from(batch: B, logic: Rc<F>) -> Self {
         let lower: Vec<_> = batch.description().lower().iter().map(|x| TInner::to_inner(x.clone())).collect();
         let upper: Vec<_> = batch.description().upper().iter().map(|x| TInner::to_inner(x.clone())).collect();
         let since: Vec<_> = batch.description().since().iter().map(|x| TInner::to_inner(x.clone())).collect();
@@ -177,11 +178,11 @@ where
 pub struct CursorEnter<K, V, T, R, C: Cursor<K, V, T, R>, TInner, F> {
     phantom: ::std::marker::PhantomData<(K, V, T, R, TInner)>,
     cursor: C,
-    logic: F,
+    logic: Rc<F>,
 }
 
 impl<K, V, T, R, C: Cursor<K, V, T, R>, TInner, F> CursorEnter<K, V, T, R, C, TInner, F> {
-    fn new(cursor: C, logic: F) -> Self {
+    fn new(cursor: C, logic: Rc<F>) -> Self {
         CursorEnter {
             phantom: ::std::marker::PhantomData,
             cursor,
@@ -195,7 +196,7 @@ where
     C: Cursor<K, V, T, R>,
     T: Timestamp,
     TInner: Refines<T>+Lattice,
-    F: FnMut(&K, &V, &T)->TInner,
+    F: Fn(&K, &V, &T)->TInner,
 {
     type Storage = C::Storage;
 
@@ -209,7 +210,7 @@ where
     fn map_times<L: FnMut(&TInner, &R)>(&mut self, storage: &Self::Storage, mut logic: L) {
         let key = self.key(storage);
         let val = self.val(storage);
-        let logic2 = &mut self.logic;
+        let logic2 = &self.logic;
         self.cursor.map_times(storage, |time, diff| {
             logic(&logic2(key, val, time), diff)
         })
@@ -231,11 +232,11 @@ where
 pub struct BatchCursorEnter<K, V, T, R, B: BatchReader<K, V, T, R>, TInner, F> {
     phantom: ::std::marker::PhantomData<(K, V, R, TInner)>,
     cursor: B::Cursor,
-    logic: F,
+    logic: Rc<F>,
 }
 
 impl<K, V, T, R, B: BatchReader<K, V, T, R>, TInner, F> BatchCursorEnter<K, V, T, R, B, TInner, F> {
-    fn new(cursor: B::Cursor, logic: F) -> Self {
+    fn new(cursor: B::Cursor, logic: Rc<F>) -> Self {
         BatchCursorEnter {
             phantom: ::std::marker::PhantomData,
             cursor,
@@ -248,7 +249,7 @@ impl<K, V, T, R, TInner, B: BatchReader<K, V, T, R>, F> Cursor<K, V, TInner, R> 
 where
     T: Timestamp,
     TInner: Refines<T>+Lattice,
-    F: FnMut(&K, &V, &T)->TInner,
+    F: Fn(&K, &V, &T)->TInner,
 {
     type Storage = BatchEnter<K, V, T, R, B, TInner, F>;
 
@@ -262,7 +263,7 @@ where
     fn map_times<L: FnMut(&TInner, &R)>(&mut self, storage: &Self::Storage, mut logic: L) {
         let key = self.key(storage);
         let val = self.val(storage);
-        let logic2 = &mut self.logic;
+        let logic2 = &self.logic;
         self.cursor.map_times(&storage.batch, |time, diff| {
             logic(&logic2(key, val, time), diff)
         })
