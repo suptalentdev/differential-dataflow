@@ -97,7 +97,6 @@ pub struct Spine<K, V, T: Lattice+Ord, R: Semigroup, B: Batch<K, V, T, R>> {
     upper: Vec<T>,
     effort: usize,
     activator: Option<timely::scheduling::activate::Activator>,
-    timer: std::time::Instant,
 }
 
 impl<K, V, T, R, B> TraceReader for Spine<K, V, T, R, B>
@@ -333,6 +332,7 @@ where
     /// Describes the merge progress of layers in the trace.
     ///
     /// Intended for diagnostics rather than public consumption.
+    #[allow(dead_code)]
     fn describe(&self) -> Vec<(usize, usize)> {
         self.merging
             .iter()
@@ -370,7 +370,6 @@ where
             upper: vec![Default::default()],
             effort,
             activator,
-            timer: std::time::Instant::now(),
         }
     }
 
@@ -533,7 +532,7 @@ where
             // Give each level independent fuel, for now.
             let mut fuel = *fuel;
             // Pass along various logging stuffs, in case we need to report success.
-            let batches = self.merging[index].work(&mut fuel);
+            self.merging[index].work(&mut fuel);
             // `fuel` could have a deficit at this point, meaning we over-spent when
             // we took a merge step. We could ignore this, or maintain the deficit
             // and account future fuel against it before spending again. It isn't
@@ -612,18 +611,48 @@ where
     fn tidy_layers(&mut self) {
 
         // If the largest layer is complete (not merging), we can attempt
-        // to draw it down to the next layer if either that layer is empty,
-        // or if it is a singleton and the layer below it is not merging.
-        // We expect this should happen at various points if we have enough
-        // fuel rolling around.
-
-        let mut length = self.merging.len();
-        if length > 0 {
+        // to draw it down to the next layer. This is permitted if we can
+        // maintain our invariant that below each merge there are at most
+        // half the records that would be required to invade the merge.
+        if !self.merging.is_empty() {
+            let mut length = self.merging.len();
             if self.merging[length-1].is_single() {
-                while (self.merging[length-1].len().next_power_of_two().trailing_zeros() as usize) < (length-1) && length > 1 && self.merging[length-2].is_vacant() {
-                    let batch = self.merging.pop().unwrap();
-                    self.merging[length-2] = batch;
-                    length = self.merging.len();
+
+                // To move a batch down, we require that it contain few
+                // enough records that the lower level is appropriate,
+                // and that moving the batch would not create a merge
+                // violating our invariant.
+
+                let appropriate_level = self.merging[length-1].len().next_power_of_two().trailing_zeros() as usize;
+
+                // Rip through any vacant or structurally empty batches.
+                while (appropriate_level < length-1) && length > 1 {
+
+                    match self.merging[length-2].take() {
+                        // Vacant or structurally empty batches can be absorbed.
+                        MergeState::Vacant | MergeState::Single(None) => {
+                            self.merging.remove(length-2);
+                            length = self.merging.len();
+                        }
+                        // Single batches may initiate a merge, if sizes are
+                        // within bounds, but terminate the loop either way.
+                        MergeState::Single(Some(batch)) => {
+                            let smaller: usize = self.merging[..(length-2)].iter().map(|b| b.len()).sum();
+                            if smaller <= (1 << length) / 8 {
+                                self.merging.remove(length-2);
+                                self.insert_at(Some(batch), length-2);
+                            }
+                            else {
+                                self.merging[length-2] = MergeState::Single(Some(batch));
+                            }
+                            return;
+                        }
+                        // If a merge is in progress there is nothing to do.
+                        MergeState::Double(state) => {
+                            self.merging[length-2] = MergeState::Double(state);
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -770,7 +799,7 @@ impl<K, V, T, R, B: Batch<K, V, T, R>> MergeVariant<K, V, T, R, B> {
     /// or a batch and optionally input batches from which it derived.
     fn complete(mut self) -> Option<(B, Option<(B, B)>)> {
         let mut fuel = isize::max_value();
-        let batches = self.work(&mut fuel);
+        self.work(&mut fuel);
         if let MergeVariant::Complete(batch) = self { batch }
         else { panic!("Failed to complete a merge!"); }
     }
