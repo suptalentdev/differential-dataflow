@@ -36,8 +36,5 @@ where
         arrangement,
         move |(pre,val),key| { *key = (key_selector(pre), val.clone()); },
         |(pre,val),r,&(),_| ((pre.clone(), val.clone()), r.clone()),
-        Default::default(),
-        Default::default(),
-        Default::default(),
     )
 }
