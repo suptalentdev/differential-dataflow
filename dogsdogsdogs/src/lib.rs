@@ -24,6 +24,7 @@ use differential_dataflow::operators::arrange::TraceAgent;
 use differential_dataflow::operators::arrange::{ArrangeBySelf, ArrangeByKey};
 
 pub mod altneu;
+pub mod calculus;
 pub mod operators;
 
 /// A type capable of extending a stream of prefixes.
@@ -47,7 +48,7 @@ pub trait PrefixExtender<G: Scope, R: Monoid+Mul<Output = R>> {
 
 pub trait ProposeExtensionMethod<G: Scope, P: ExchangeData+Ord, R: Monoid+Mul<Output = R>> {
     fn propose_using<PE: PrefixExtender<G, R, Prefix=P>>(&self, extender: &mut PE) -> Collection<G, (P, PE::Extension), R>;
-    fn extend<E: ExchangeData+Ord>(&self, extenders: &mut [&mut PrefixExtender<G,R,Prefix=P,Extension=E>]) -> Collection<G, (P, E), R>;
+    fn extend<E: ExchangeData+Ord>(&self, extenders: &mut [&mut dyn PrefixExtender<G,R,Prefix=P,Extension=E>]) -> Collection<G, (P, E), R>;
 }
 
 impl<G, P, R> ProposeExtensionMethod<G, P, R> for Collection<G, P, R>
@@ -62,7 +63,7 @@ where
     {
         extender.propose(self)
     }
-    fn extend<E>(&self, extenders: &mut [&mut PrefixExtender<G,R,Prefix=P,Extension=E>]) -> Collection<G, (P, E), R>
+    fn extend<E>(&self, extenders: &mut [&mut dyn PrefixExtender<G,R,Prefix=P,Extension=E>]) -> Collection<G, (P, E), R>
     where
         E: ExchangeData+Ord
     {
@@ -112,7 +113,7 @@ pub struct CollectionIndex<K, V, T, R>
 where
     K: ExchangeData,
     V: ExchangeData,
-    T: Lattice+ExchangeData+Default,
+    T: Lattice+ExchangeData,
     R: Monoid+Mul<Output = R>+ExchangeData,
 {
     /// A trace of type (K, ()), used to count extensions for each prefix.
@@ -180,7 +181,7 @@ pub struct CollectionExtender<K, V, T, R, P, F>
 where
     K: ExchangeData,
     V: ExchangeData,
-    T: Lattice+ExchangeData+Default,
+    T: Lattice+ExchangeData,
     R: Monoid+Mul<Output = R>+ExchangeData,
     F: Fn(&P)->K+Clone,
 {
