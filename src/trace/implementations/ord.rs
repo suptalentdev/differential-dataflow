@@ -14,7 +14,7 @@ use std::marker::PhantomData;
 use std::fmt::Debug;
 
 use ::difference::Semigroup;
-use lattice::{Lattice, antichain_join};
+use lattice::Lattice;
 
 use trace::layers::{Trie, TupleBuilder};
 use trace::layers::Builder as TrieBuilder;
@@ -86,8 +86,8 @@ where
 	type Builder = OrdValBuilder<K, V, T, R, O>;
 	type Merger = OrdValMerger<K, V, T, R, O>;
 
-	fn begin_merge(&self, other: &Self, compaction_frontier: Option<&[T]>) -> Self::Merger {
-		OrdValMerger::new(self, other, compaction_frontier)
+	fn begin_merge(&self, other: &Self) -> Self::Merger {
+		OrdValMerger::new(self, other)
 	}
 }
 
@@ -210,7 +210,6 @@ where
 	// result that we are currently assembling.
 	result: <OrderedLayer<K, OrderedLayer<V, OrderedLeaf<T, R>, O>, O> as Trie>::MergeBuilder,
 	description: Description<T>,
-	should_compact: bool,
 }
 
 impl<K, V, T, R, O> Merger<K, V, T, R, OrdValBatch<K, V, T, R, O>> for OrdValMerger<K, V, T, R, O>
@@ -221,20 +220,18 @@ where
     R: Semigroup,
     O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug
 {
-	fn new(batch1: &OrdValBatch<K, V, T, R, O>, batch2: &OrdValBatch<K, V, T, R, O>, compaction_frontier: Option<&[T]>) -> Self {
+	fn new(batch1: &OrdValBatch<K, V, T, R, O>, batch2: &OrdValBatch<K, V, T, R, O>) -> Self {
 
 		assert!(batch1.upper() == batch2.lower());
 
-		let since = {
-			let since = antichain_join(batch1.description().since(), batch2.description().since());
-			if let Some(compaction_frontier) = compaction_frontier {
-				antichain_join(since.elements(), compaction_frontier)
-			} else {
-				since
-			}
+		let since = if batch1.description().since().iter().all(|t1| batch2.description().since().iter().any(|t2| t2.less_equal(t1))) {
+			batch2.description().since()
+		}
+		else {
+			batch1.description().since()
 		};
 
-		let description = Description::new(batch1.lower(), batch2.upper(), since.elements());
+		let description = Description::new(batch1.lower(), batch2.upper(), since);
 
 		OrdValMerger {
 			lower1: 0,
@@ -243,7 +240,6 @@ where
 			upper2: batch2.layer.keys(),
 			result: <<OrderedLayer<K, OrderedLayer<V, OrderedLeaf<T, R>, O>, O> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(&batch1.layer, &batch2.layer),
 			description: description,
-			should_compact: compaction_frontier.is_some(),
 		}
 	}
 	fn done(self) -> OrdValBatch<K, V, T, R, O> {
@@ -256,7 +252,7 @@ where
 			desc: self.description,
 		}
 	}
-	fn work(&mut self, source1: &OrdValBatch<K,V,T,R,O>, source2: &OrdValBatch<K,V,T,R,O>, fuel: &mut isize) {
+	fn work(&mut self, source1: &OrdValBatch<K,V,T,R,O>, source2: &OrdValBatch<K,V,T,R,O>, frontier: &Option<Vec<T>>, fuel: &mut isize) {
 
 		let starting_updates = self.result.vals.vals.vals.len();
 		let mut effort = 0isize;
@@ -294,8 +290,8 @@ where
 		effort = (self.result.vals.vals.vals.len() - starting_updates) as isize;
 
 		// if we are supplied a frontier, we should compact.
-		if self.should_compact {
-			OrdValBatch::advance_builder_from(&mut self.result, self.description.since(), initial_key_pos);
+		if let Some(frontier) = frontier.as_ref() {
+			OrdValBatch::advance_builder_from(&mut self.result, frontier, initial_key_pos)
 		}
 
         *fuel -= effort;
@@ -442,8 +438,8 @@ where
 	type Builder = OrdKeyBuilder<K, T, R, O>;
 	type Merger = OrdKeyMerger<K, T, R, O>;
 
-	fn begin_merge(&self, other: &Self, compaction_frontier: Option<&[T]>) -> Self::Merger {
-		OrdKeyMerger::new(self, other, compaction_frontier)
+	fn begin_merge(&self, other: &Self) -> Self::Merger {
+		OrdKeyMerger::new(self, other)
 	}
 }
 
@@ -534,7 +530,6 @@ where
 	// result that we are currently assembling.
 	result: <OrderedLayer<K, OrderedLeaf<T, R>, O> as Trie>::MergeBuilder,
 	description: Description<T>,
-	should_compact: bool,
 }
 
 impl<K, T, R, O> Merger<K, (), T, R, OrdKeyBatch<K, T, R, O>> for OrdKeyMerger<K, T, R, O>
@@ -544,20 +539,18 @@ where
     R: Semigroup,
     O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug
 {
-	fn new(batch1: &OrdKeyBatch<K, T, R, O>, batch2: &OrdKeyBatch<K, T, R, O>, compaction_frontier: Option<&[T]>) -> Self {
+	fn new(batch1: &OrdKeyBatch<K, T, R, O>, batch2: &OrdKeyBatch<K, T, R, O>) -> Self {
 
 		assert!(batch1.upper() == batch2.lower());
 
-		let since = {
-			let since = antichain_join(batch1.description().since(), batch2.description().since());
-			if let Some(compaction_frontier) = compaction_frontier {
-				antichain_join(since.elements(), compaction_frontier)
-			} else {
-				since
-			}
+		let since = if batch1.description().since().iter().all(|t1| batch2.description().since().iter().any(|t2| t2.less_equal(t1))) {
+			batch2.description().since()
+		}
+		else {
+			batch1.description().since()
 		};
 
-		let description = Description::new(batch1.lower(), batch2.upper(), since.elements());
+		let description = Description::new(batch1.lower(), batch2.upper(), since);
 
 		OrdKeyMerger {
 			lower1: 0,
@@ -566,7 +559,6 @@ where
 			upper2: batch2.layer.keys(),
 			result: <<OrderedLayer<K, OrderedLeaf<T, R>, O> as Trie>::MergeBuilder as MergeBuilder>::with_capacity(&batch1.layer, &batch2.layer),
 			description: description,
-			should_compact: compaction_frontier.is_some(),
 		}
 	}
 	fn done(self) -> OrdKeyBatch<K, T, R, O> {
@@ -579,7 +571,7 @@ where
 			desc: self.description,
 		}
 	}
-	fn work(&mut self, source1: &OrdKeyBatch<K,T,R,O>, source2: &OrdKeyBatch<K,T,R,O>, fuel: &mut isize) {
+	fn work(&mut self, source1: &OrdKeyBatch<K,T,R,O>, source2: &OrdKeyBatch<K,T,R,O>, frontier: &Option<Vec<T>>, fuel: &mut isize) {
 
 		let starting_updates = self.result.vals.vals.len();
 		let mut effort = 0isize;
@@ -622,9 +614,8 @@ where
 
         effort = (self.result.vals.vals.len() - starting_updates) as isize;
 
-		// if we are supplied a frontier, we should compact.
-		if self.should_compact {
-			OrdKeyBatch::advance_builder_from(&mut self.result, self.description.since(), initial_key_pos);
+		if let Some(frontier) = frontier.as_ref() {
+			OrdKeyBatch::advance_builder_from(&mut self.result, frontier, initial_key_pos);
 		}
 
         *fuel -= effort;

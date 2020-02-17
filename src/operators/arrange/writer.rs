@@ -8,7 +8,6 @@ use std::cell::RefCell;
 
 use lattice::Lattice;
 use trace::{Trace, Batch, BatchReader};
-use timely::progress::Timestamp;
 
 use trace::wrappers::rc::TraceBox;
 
@@ -96,7 +95,7 @@ where
         if &self.upper[..] != upper {
             use trace::Builder;
             let builder = <Tr::Batch as Batch<Tr::Key,Tr::Val,Tr::Time,Tr::R>>::Builder::new();
-            let batch = builder.done(&self.upper[..], upper, &[Tr::Time::minimum()]);
+            let batch = builder.done(&self.upper[..], upper, &self.upper[..]);
             self.insert(batch, None);
         }
     }

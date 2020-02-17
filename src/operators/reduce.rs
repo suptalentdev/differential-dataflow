@@ -11,7 +11,6 @@ use ::difference::{Semigroup, Abelian};
 
 use timely::order::PartialOrder;
 use timely::progress::frontier::Antichain;
-use timely::progress::Timestamp;
 use timely::dataflow::*;
 use timely::dataflow::operators::Operator;
 use timely::dataflow::channels::pact::Pipeline;
@@ -582,7 +581,7 @@ where
 
                                 if output_upper.elements() != output_lower.elements() {
 
-                                    let batch = builder.done(output_lower.elements(), output_upper.elements(), &[G::Timestamp::minimum()]);
+                                    let batch = builder.done(output_lower.elements(), output_upper.elements(), output_lower.elements());
 
                                     // ship batch to the output, and commit to the output trace.
                                     output.session(&capabilities[index]).give(batch.clone());
