@@ -28,9 +28,7 @@ use trace::TraceReader;
 /// Join implementations for `(key,val)` data.
 pub trait Join<G: Scope, K: Data, V: Data, R: Semigroup> {
 
-    /// Matches pairs `(key,val1)` and `(key,val2)` based on `key` and yields pairs `(key, (val1, val2))`.
-    ///
-    /// The [`join_map`](Join::join_map) method may be more convenient for non-trivial processing pipelines.
+    /// Matches pairs `(key,val1)` and `(key,val2)` based on `key` and then applies a function.
     ///
     /// # Examples
     ///
